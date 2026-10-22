@@ -1,0 +1,10 @@
+# Build-context ignore list for telemetry-streamer.Dockerfile (BuildKit reads it
+# from beside the Dockerfile). Paths are relative to the context: telemetry-streamer/.
+# Do NOT ignore internal/resource/dcgm.csv: it is baked into the image.
+.git
+bin/
+coverage.*
+*.md
+**/*_test.go
+cmd/fakeserver
+proto

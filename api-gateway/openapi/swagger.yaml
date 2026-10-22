@@ -1,0 +1,315 @@
+basePath: /
+definitions:
+  Error:
+    properties:
+      error:
+        description: What went wrong, for a person to read
+        example: no telemetry for GPU GPU-00000000-0000-0000-0000-000000000000
+        type: string
+      request_id:
+        description: The request's correlation id, also in X-Request-Id
+        example: 3f9c2a7d1e5b8c40
+        type: string
+    required:
+    - error
+    type: object
+  GPU:
+    properties:
+      id:
+        description: GPU id in the DCGM form
+        example: GPU-43a42a8a-c5bb-7c37-0096-f5098e8ea951
+        type: string
+      last_seen:
+        description: When a collector last recorded telemetry for this GPU (refreshed
+          about once a minute)
+        example: "2026-10-20T17:15:30Z"
+        format: date-time
+        type: string
+    required:
+    - id
+    - last_seen
+    type: object
+  GPUList:
+    properties:
+      count:
+        description: Number of GPUs returned
+        example: 2
+        type: integer
+      gpus:
+        items:
+          $ref: '#/definitions/GPU'
+        type: array
+      truncated:
+        description: True only when limit was set and more GPUs exist
+        example: false
+        type: boolean
+    required:
+    - count
+    - gpus
+    - truncated
+    type: object
+  TelemetryEntry:
+    properties:
+      metric:
+        description: DCGM field name
+        example: DCGM_FI_DEV_POWER_USAGE
+        type: string
+      streamer_id:
+        description: The streamer that produced the sample
+        example: 0
+        maximum: 65535
+        minimum: 0
+        type: integer
+      timestamp:
+        description: Sample time, UTC, nanosecond precision
+        example: "2026-10-20T17:15:29.59750465Z"
+        format: date-time
+        type: string
+      value:
+        description: The sample value; null when it is NaN or infinite
+        example: 71.32
+        type: number
+        x-nullable: true
+    required:
+    - metric
+    - streamer_id
+    - timestamp
+    - value
+    type: object
+  TelemetryList:
+    properties:
+      count:
+        description: Number of entries returned
+        example: 2
+        type: integer
+      end_time:
+        description: The requested upper bound, in UTC; absent when not given
+        format: date-time
+        type: string
+      gpu_id:
+        description: The GPU, in the DCGM form
+        example: GPU-43a42a8a-c5bb-7c37-0096-f5098e8ea951
+        type: string
+      start_time:
+        description: The requested lower bound, in UTC; absent when not given
+        format: date-time
+        type: string
+      telemetry:
+        items:
+          $ref: '#/definitions/TelemetryEntry'
+        type: array
+      truncated:
+        description: True only when limit was set and more entries matched; those
+          returned are the earliest
+        example: false
+        type: boolean
+    required:
+    - count
+    - gpu_id
+    - telemetry
+    - truncated
+    type: object
+info:
+  contact: {}
+  description: |-
+    Read-only API over the GPU telemetry store (ClickHouse). Lists the GPUs that have reported telemetry and serves one GPU's telemetry, ordered by time.
+
+    Everything by default: both endpoints return all matching items unless the request sets the optional limit. truncated is true only when a limit left items out. Telemetry is streamed, so a large history arrives progressively.
+
+    GPU ids are the DCGM form GPU-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx; the bare UUID is accepted too. Times are RFC 3339 with optional fractional seconds, returned in UTC with nanosecond precision.
+
+    Local dev: http://localhost:8080 with make api-port (a background port-forward; make api-port-stop ends it), or http://<minikube ip>:30080 through the dev NodePort.
+
+    No authentication: the API is read-only and reachable inside the cluster, or through a port-forward or an Ingress put in front of it. Health and metrics are on the separate admin port (9090).
+  title: GPU Telemetry API
+  version: 0.1.0
+paths:
+  /api/v1/gpus:
+    get:
+      description: Returns all GPUs for which telemetry is available, from the GPU
+        registry, or the first limit of them when limit is set. A GPU leaves the list
+        when its telemetry ages out of retention. Responses are cached by the gateway
+        for a few seconds.
+      operationId: listGPUs
+      parameters:
+      - description: Optional. Return at most this many GPUs; all of them when omitted.
+        in: query
+        minimum: 1
+        name: limit
+        type: integer
+      - description: Correlation id, echoed back and logged. Up to 64 printable ASCII
+          characters; one is generated otherwise.
+        in: header
+        maxLength: 64
+        name: X-Request-Id
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          headers:
+            X-Request-Id:
+              description: The request's correlation id.
+              type: string
+          schema:
+            $ref: '#/definitions/GPUList'
+        "400":
+          description: Invalid limit, or an unknown query parameter.
+          headers:
+            X-Request-Id:
+              description: The request's correlation id.
+              type: string
+          schema:
+            $ref: '#/definitions/Error'
+        "422":
+          description: The query would read or hold too much; lower limit.
+          headers:
+            X-Request-Id:
+              description: The request's correlation id.
+              type: string
+          schema:
+            $ref: '#/definitions/Error'
+        "429":
+          description: At the concurrency or quota limit; retry after Retry-After
+            seconds.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying.
+              type: integer
+            X-Request-Id:
+              description: The request's correlation id.
+              type: string
+          schema:
+            $ref: '#/definitions/Error'
+        "503":
+          description: The telemetry store is unreachable or failed.
+          headers:
+            X-Request-Id:
+              description: The request's correlation id.
+              type: string
+          schema:
+            $ref: '#/definitions/Error'
+        "504":
+          description: The query timed out.
+          headers:
+            X-Request-Id:
+              description: The request's correlation id.
+              type: string
+          schema:
+            $ref: '#/definitions/Error'
+      summary: List GPUs
+      tags:
+      - gpus
+  /api/v1/gpus/{id}/telemetry:
+    get:
+      description: Returns all of the GPU's telemetry entries ordered by time (then
+        metric, then streamer), optionally within an inclusive time window; either
+        bound may be left out. When limit is set, only the earliest limit entries
+        are returned. Duplicates from at-least-once delivery are removed. The response
+        is streamed, so a large history arrives progressively. A GPU that has never
+        reported gives 404; a known GPU with nothing in the window gives 200 with
+        an empty telemetry list.
+      operationId: getGPUTelemetry
+      parameters:
+      - description: GPU id, with or without the GPU- prefix, e.g. GPU-43a42a8a-c5bb-7c37-0096-f5098e8ea951.
+          List GPUs gives the ids.
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Inclusive lower bound, RFC 3339, e.g. 2026-10-20T17:15:00Z. Must
+          not be after end_time.
+        format: date-time
+        in: query
+        name: start_time
+        type: string
+      - description: Inclusive upper bound, RFC 3339.
+        format: date-time
+        in: query
+        name: end_time
+        type: string
+      - description: Optional. Return at most this many entries, the earliest; all
+          of them when omitted.
+        in: query
+        minimum: 1
+        name: limit
+        type: integer
+      - description: Correlation id, echoed back and logged. Up to 64 printable ASCII
+          characters; one is generated otherwise.
+        in: header
+        maxLength: 64
+        name: X-Request-Id
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          headers:
+            X-Request-Id:
+              description: The request's correlation id.
+              type: string
+          schema:
+            $ref: '#/definitions/TelemetryList'
+        "400":
+          description: Invalid id, time or limit; start_time after end_time; or an
+            unknown query parameter.
+          headers:
+            X-Request-Id:
+              description: The request's correlation id.
+              type: string
+          schema:
+            $ref: '#/definitions/Error'
+        "404":
+          description: No telemetry has ever been recorded for this GPU.
+          headers:
+            X-Request-Id:
+              description: The request's correlation id.
+              type: string
+          schema:
+            $ref: '#/definitions/Error'
+        "422":
+          description: The query would read or hold too much; narrow the window or
+            lower limit.
+          headers:
+            X-Request-Id:
+              description: The request's correlation id.
+              type: string
+          schema:
+            $ref: '#/definitions/Error'
+        "429":
+          description: At the concurrency or quota limit; retry after Retry-After
+            seconds.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying.
+              type: integer
+            X-Request-Id:
+              description: The request's correlation id.
+              type: string
+          schema:
+            $ref: '#/definitions/Error'
+        "503":
+          description: The telemetry store is unreachable or failed.
+          headers:
+            X-Request-Id:
+              description: The request's correlation id.
+              type: string
+          schema:
+            $ref: '#/definitions/Error'
+        "504":
+          description: The query timed out; narrow the window or lower limit.
+          headers:
+            X-Request-Id:
+              description: The request's correlation id.
+              type: string
+          schema:
+            $ref: '#/definitions/Error'
+      summary: Query telemetry by GPU
+      tags:
+      - gpus
+swagger: "2.0"
+tags:
+- description: GPUs and their telemetry
+  name: gpus

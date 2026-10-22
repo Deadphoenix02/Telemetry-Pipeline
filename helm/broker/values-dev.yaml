@@ -1,0 +1,27 @@
+# Dev environment (the only environment file). Inherits the resource budget
+# from values.yaml.
+image:
+  repository: broker
+  tag: dev
+  pullPolicy: IfNotPresent   # image is loaded into the local cluster
+
+replicas: 3                  # streamers fail over between them; collectors read all three
+
+broker:
+  logLevel: info
+  quotaMB: 4096              # about 9 h of backlog at 2 x 1000 rows/s if ClickHouse is down
+
+persistence:
+  size: 6Gi                  # minikube's hostpath storage does not enforce it; quotaMB is the real cap
+  retain: false              # dev: uninstall removes the WAL
+
+podAnnotations:             # scraped by the cluster Prometheus (monitoring/)
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8080"
+  prometheus.io/path: /metrics
+
+networkPolicy:
+  enabled: true
+
+serviceMonitor:
+  enabled: false

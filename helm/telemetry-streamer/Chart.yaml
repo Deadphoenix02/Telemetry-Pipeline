@@ -1,0 +1,6 @@
+apiVersion: v2
+name: telemetry-streamer
+description: Streams a CSV of GPU telemetry as individual records over gRPC.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

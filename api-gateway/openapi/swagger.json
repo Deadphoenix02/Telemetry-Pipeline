@@ -1,0 +1,408 @@
+{
+    "swagger": "2.0",
+    "info": {
+        "description": "Read-only API over the GPU telemetry store (ClickHouse). Lists the GPUs that have reported telemetry and serves one GPU's telemetry, ordered by time.\n\nEverything by default: both endpoints return all matching items unless the request sets the optional limit. truncated is true only when a limit left items out. Telemetry is streamed, so a large history arrives progressively.\n\nGPU ids are the DCGM form GPU-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx; the bare UUID is accepted too. Times are RFC 3339 with optional fractional seconds, returned in UTC with nanosecond precision.\n\nLocal dev: http://localhost:8080 with make api-port (a background port-forward; make api-port-stop ends it), or http://\u003cminikube ip\u003e:30080 through the dev NodePort.\n\nNo authentication: the API is read-only and reachable inside the cluster, or through a port-forward or an Ingress put in front of it. Health and metrics are on the separate admin port (9090).",
+        "title": "GPU Telemetry API",
+        "contact": {},
+        "version": "0.1.0"
+    },
+    "basePath": "/",
+    "paths": {
+        "/api/v1/gpus": {
+            "get": {
+                "description": "Returns all GPUs for which telemetry is available, from the GPU registry, or the first limit of them when limit is set. A GPU leaves the list when its telemetry ages out of retention. Responses are cached by the gateway for a few seconds.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "gpus"
+                ],
+                "summary": "List GPUs",
+                "operationId": "listGPUs",
+                "parameters": [
+                    {
+                        "minimum": 1,
+                        "type": "integer",
+                        "description": "Optional. Return at most this many GPUs; all of them when omitted.",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "maxLength": 64,
+                        "type": "string",
+                        "description": "Correlation id, echoed back and logged. Up to 64 printable ASCII characters; one is generated otherwise.",
+                        "name": "X-Request-Id",
+                        "in": "header"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/GPUList"
+                        },
+                        "headers": {
+                            "X-Request-Id": {
+                                "type": "string",
+                                "description": "The request's correlation id."
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid limit, or an unknown query parameter.",
+                        "schema": {
+                            "$ref": "#/definitions/Error"
+                        },
+                        "headers": {
+                            "X-Request-Id": {
+                                "type": "string",
+                                "description": "The request's correlation id."
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "The query would read or hold too much; lower limit.",
+                        "schema": {
+                            "$ref": "#/definitions/Error"
+                        },
+                        "headers": {
+                            "X-Request-Id": {
+                                "type": "string",
+                                "description": "The request's correlation id."
+                            }
+                        }
+                    },
+                    "429": {
+                        "description": "At the concurrency or quota limit; retry after Retry-After seconds.",
+                        "schema": {
+                            "$ref": "#/definitions/Error"
+                        },
+                        "headers": {
+                            "Retry-After": {
+                                "type": "integer",
+                                "description": "Seconds to wait before retrying."
+                            },
+                            "X-Request-Id": {
+                                "type": "string",
+                                "description": "The request's correlation id."
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "The telemetry store is unreachable or failed.",
+                        "schema": {
+                            "$ref": "#/definitions/Error"
+                        },
+                        "headers": {
+                            "X-Request-Id": {
+                                "type": "string",
+                                "description": "The request's correlation id."
+                            }
+                        }
+                    },
+                    "504": {
+                        "description": "The query timed out.",
+                        "schema": {
+                            "$ref": "#/definitions/Error"
+                        },
+                        "headers": {
+                            "X-Request-Id": {
+                                "type": "string",
+                                "description": "The request's correlation id."
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/gpus/{id}/telemetry": {
+            "get": {
+                "description": "Returns all of the GPU's telemetry entries ordered by time (then metric, then streamer), optionally within an inclusive time window; either bound may be left out. When limit is set, only the earliest limit entries are returned. Duplicates from at-least-once delivery are removed. The response is streamed, so a large history arrives progressively. A GPU that has never reported gives 404; a known GPU with nothing in the window gives 200 with an empty telemetry list.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "gpus"
+                ],
+                "summary": "Query telemetry by GPU",
+                "operationId": "getGPUTelemetry",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "GPU id, with or without the GPU- prefix, e.g. GPU-43a42a8a-c5bb-7c37-0096-f5098e8ea951. List GPUs gives the ids.",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "format": "date-time",
+                        "description": "Inclusive lower bound, RFC 3339, e.g. 2026-10-20T17:15:00Z. Must not be after end_time.",
+                        "name": "start_time",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "format": "date-time",
+                        "description": "Inclusive upper bound, RFC 3339.",
+                        "name": "end_time",
+                        "in": "query"
+                    },
+                    {
+                        "minimum": 1,
+                        "type": "integer",
+                        "description": "Optional. Return at most this many entries, the earliest; all of them when omitted.",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "maxLength": 64,
+                        "type": "string",
+                        "description": "Correlation id, echoed back and logged. Up to 64 printable ASCII characters; one is generated otherwise.",
+                        "name": "X-Request-Id",
+                        "in": "header"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/TelemetryList"
+                        },
+                        "headers": {
+                            "X-Request-Id": {
+                                "type": "string",
+                                "description": "The request's correlation id."
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid id, time or limit; start_time after end_time; or an unknown query parameter.",
+                        "schema": {
+                            "$ref": "#/definitions/Error"
+                        },
+                        "headers": {
+                            "X-Request-Id": {
+                                "type": "string",
+                                "description": "The request's correlation id."
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "No telemetry has ever been recorded for this GPU.",
+                        "schema": {
+                            "$ref": "#/definitions/Error"
+                        },
+                        "headers": {
+                            "X-Request-Id": {
+                                "type": "string",
+                                "description": "The request's correlation id."
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "The query would read or hold too much; narrow the window or lower limit.",
+                        "schema": {
+                            "$ref": "#/definitions/Error"
+                        },
+                        "headers": {
+                            "X-Request-Id": {
+                                "type": "string",
+                                "description": "The request's correlation id."
+                            }
+                        }
+                    },
+                    "429": {
+                        "description": "At the concurrency or quota limit; retry after Retry-After seconds.",
+                        "schema": {
+                            "$ref": "#/definitions/Error"
+                        },
+                        "headers": {
+                            "Retry-After": {
+                                "type": "integer",
+                                "description": "Seconds to wait before retrying."
+                            },
+                            "X-Request-Id": {
+                                "type": "string",
+                                "description": "The request's correlation id."
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "The telemetry store is unreachable or failed.",
+                        "schema": {
+                            "$ref": "#/definitions/Error"
+                        },
+                        "headers": {
+                            "X-Request-Id": {
+                                "type": "string",
+                                "description": "The request's correlation id."
+                            }
+                        }
+                    },
+                    "504": {
+                        "description": "The query timed out; narrow the window or lower limit.",
+                        "schema": {
+                            "$ref": "#/definitions/Error"
+                        },
+                        "headers": {
+                            "X-Request-Id": {
+                                "type": "string",
+                                "description": "The request's correlation id."
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "definitions": {
+        "Error": {
+            "type": "object",
+            "required": [
+                "error"
+            ],
+            "properties": {
+                "error": {
+                    "description": "What went wrong, for a person to read",
+                    "type": "string",
+                    "example": "no telemetry for GPU GPU-00000000-0000-0000-0000-000000000000"
+                },
+                "request_id": {
+                    "description": "The request's correlation id, also in X-Request-Id",
+                    "type": "string",
+                    "example": "3f9c2a7d1e5b8c40"
+                }
+            }
+        },
+        "GPU": {
+            "type": "object",
+            "required": [
+                "id",
+                "last_seen"
+            ],
+            "properties": {
+                "id": {
+                    "description": "GPU id in the DCGM form",
+                    "type": "string",
+                    "example": "GPU-43a42a8a-c5bb-7c37-0096-f5098e8ea951"
+                },
+                "last_seen": {
+                    "description": "When a collector last recorded telemetry for this GPU (refreshed about once a minute)",
+                    "type": "string",
+                    "format": "date-time",
+                    "example": "2026-10-20T17:15:30Z"
+                }
+            }
+        },
+        "GPUList": {
+            "type": "object",
+            "required": [
+                "count",
+                "gpus",
+                "truncated"
+            ],
+            "properties": {
+                "count": {
+                    "description": "Number of GPUs returned",
+                    "type": "integer",
+                    "example": 2
+                },
+                "gpus": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/GPU"
+                    }
+                },
+                "truncated": {
+                    "description": "True only when limit was set and more GPUs exist",
+                    "type": "boolean",
+                    "example": false
+                }
+            }
+        },
+        "TelemetryEntry": {
+            "type": "object",
+            "required": [
+                "metric",
+                "streamer_id",
+                "timestamp",
+                "value"
+            ],
+            "properties": {
+                "metric": {
+                    "description": "DCGM field name",
+                    "type": "string",
+                    "example": "DCGM_FI_DEV_POWER_USAGE"
+                },
+                "streamer_id": {
+                    "description": "The streamer that produced the sample",
+                    "type": "integer",
+                    "maximum": 65535,
+                    "minimum": 0,
+                    "example": 0
+                },
+                "timestamp": {
+                    "description": "Sample time, UTC, nanosecond precision",
+                    "type": "string",
+                    "format": "date-time",
+                    "example": "2026-10-20T17:15:29.59750465Z"
+                },
+                "value": {
+                    "description": "The sample value; null when it is NaN or infinite",
+                    "type": "number",
+                    "x-nullable": true,
+                    "example": 71.32
+                }
+            }
+        },
+        "TelemetryList": {
+            "type": "object",
+            "required": [
+                "count",
+                "gpu_id",
+                "telemetry",
+                "truncated"
+            ],
+            "properties": {
+                "count": {
+                    "description": "Number of entries returned",
+                    "type": "integer",
+                    "example": 2
+                },
+                "end_time": {
+                    "description": "The requested upper bound, in UTC; absent when not given",
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "gpu_id": {
+                    "description": "The GPU, in the DCGM form",
+                    "type": "string",
+                    "example": "GPU-43a42a8a-c5bb-7c37-0096-f5098e8ea951"
+                },
+                "start_time": {
+                    "description": "The requested lower bound, in UTC; absent when not given",
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "telemetry": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/TelemetryEntry"
+                    }
+                },
+                "truncated": {
+                    "description": "True only when limit was set and more entries matched; those returned are the earliest",
+                    "type": "boolean",
+                    "example": false
+                }
+            }
+        }
+    },
+    "tags": [
+        {
+            "description": "GPUs and their telemetry",
+            "name": "gpus"
+        }
+    ]
+}

@@ -1,0 +1,67 @@
+<!-- Local docker test harness only. Mirrors the users the Helm chart defines
+     (templates/_helpers.tpl, "ts.usersXml"); keep the two in sync.
+     Plaintext passwords are fine here; the chart reads hashes from a Secret. -->
+<clickhouse>
+    <profiles>
+        <default>
+            <max_threads>2</max_threads>
+        </default>
+        <api_profile>
+            <max_execution_time>10</max_execution_time>
+            <max_memory_usage>500000000</max_memory_usage>
+            <max_result_rows>100000</max_result_rows>
+            <result_overflow_mode>throw</result_overflow_mode>
+            <max_rows_to_read>100000000</max_rows_to_read>
+            <read_overflow_mode>throw</read_overflow_mode>
+            <max_threads>2</max_threads>
+            <max_concurrent_queries_for_user>8</max_concurrent_queries_for_user>
+            <readonly>2</readonly>
+            <constraints>
+                <max_execution_time><readonly/></max_execution_time>
+                <max_memory_usage><readonly/></max_memory_usage>
+                <max_result_rows><readonly/></max_result_rows>
+                <result_overflow_mode><readonly/></result_overflow_mode>
+                <max_rows_to_read><readonly/></max_rows_to_read>
+                <read_overflow_mode><readonly/></read_overflow_mode>
+                <max_threads><readonly/></max_threads>
+                <max_concurrent_queries_for_user><readonly/></max_concurrent_queries_for_user>
+            </constraints>
+        </api_profile>
+        <collector_profile>
+            <async_insert>0</async_insert>
+        </collector_profile>
+    </profiles>
+    <quotas>
+        <api_quota>
+            <interval>
+                <duration>60</duration>
+                <queries>1200</queries>
+                <errors>200</errors>
+                <read_rows>2000000000</read_rows>
+                <result_rows>0</result_rows>
+                <execution_time>0</execution_time>
+            </interval>
+        </api_quota>
+    </quotas>
+    <users>
+        <collector>
+            <password>collector-dev-pw</password>
+            <networks><ip>127.0.0.1</ip><ip>::1</ip></networks>
+            <profile>collector_profile</profile>
+            <grants>
+                <query>GRANT INSERT ON default.telemetry</query>
+                <query>GRANT INSERT ON default.gpus</query>
+            </grants>
+        </collector>
+        <api>
+            <password>api-dev-pw</password>
+            <networks><ip>127.0.0.1</ip><ip>::1</ip></networks>
+            <profile>api_profile</profile>
+            <quota>api_quota</quota>
+            <grants>
+                <query>GRANT SELECT ON default.telemetry</query>
+                <query>GRANT SELECT ON default.gpus</query>
+            </grants>
+        </api>
+    </users>
+</clickhouse>

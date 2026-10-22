@@ -1,0 +1,14 @@
+telemetry-store {{ .Chart.Version }} installed in namespace {{ .Release.Namespace }} ({{ .Values.topology.mode }} mode).
+
+Connect applications to:
+  clickhouse-{{ include "ts.fullname" . }}.{{ .Release.Namespace }}.svc   (native 9000, HTTP 8123)
+
+Tables for applications: telemetry, gpus.
+Users: collector (insert only), api (read only, limited).
+Passwords are in Secret {{ include "ts.secretName" . }}: keys collector-password and api-password.
+
+Pods that need access must carry the label telemetry-store/client: "true"
+(see networkPolicy.clients in values.yaml).
+
+Check the schema migration Job:
+  kubectl -n {{ .Release.Namespace }} get jobs,pods -l app.kubernetes.io/component=migrations

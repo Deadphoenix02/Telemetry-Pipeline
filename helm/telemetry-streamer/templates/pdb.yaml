@@ -1,0 +1,13 @@
+{{- if gt (int .Values.streamer.replicas) 1 }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "telemetry-streamer.role" (dict "ctx" . "role" "pdb") }}
+  labels:
+    {{- include "telemetry-streamer.labels" . | nindent 4 }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "telemetry-streamer.selectorLabels" . | nindent 6 }}
+{{- end }}

@@ -1,0 +1,82 @@
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: broker
+  tag: ""              # defaults to the chart appVersion
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+runAsUser: 65532       # matches the Dockerfile
+
+# Independent brokers (1..5). Each pod is a whole queue of its own: its own WAL
+# volume, partitions and consumer-group coordinator. Nothing is replicated, so
+# more brokers buy write availability, not durability: streamers fail over to
+# the brokers still up, and collectors consume from every broker. The
+# streamer and collector charts must list the same number (brokers.replicas).
+replicas: 1
+
+broker:
+  partitions: 10       # fixed once the PVC holds data; the broker refuses to start on a mismatch
+  segmentKB: 1024      # the active segment of every partition is held in memory
+  flushInterval: 20ms  # group-commit fsync; producer acks wait for it
+  truncateInterval: 1s # committed (consumed) entries are deleted this often
+  quotaMB: 256         # producers pause at this much WAL on disk (keep below persistence.size)
+  linger: 10ms
+  maxFrameKB: 64
+  fetchMaxKB: 256
+  fetchMaxWait: 500ms
+  group: collectors
+  sessionTimeout: 10s
+  heartbeatInterval: 3s
+  joinWindow: 1s
+  rebalanceTimeout: 15s # must exceed the collectors' insert timeout plus flush interval
+  drainTimeoutSeconds: 10 # pod grace period = this + 20
+  logLevel: info
+  goMemLimit: 100MiB   # ~80% of the memory limit
+
+service:
+  grpcPort: 7070       # Ingest (streamers), Broker.Fetch and Coordinator (collectors)
+  httpPort: 8080       # /healthz /readyz /metrics /lag (KEDA)
+
+persistence:
+  size: 512Mi
+  storageClass: ""     # empty = the cluster default
+  # Keep the WAL when the release is uninstalled (Delete removes the PVC too).
+  retain: true
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 128Mi
+
+podAnnotations: {}
+
+networkPolicy:
+  enabled: true
+  dns:
+    namespaceLabels:
+      kubernetes.io/metadata.name: kube-system
+    podLabels:
+      k8s-app: kube-dns
+  # Peers allowed on the gRPC port (streamers and collectors). Default: pods in
+  # this namespace.
+  grpcFrom:
+    - podSelector: {}
+  # Peers allowed on the HTTP port: this namespace, KEDA (reads /lag) and Prometheus.
+  httpFrom:
+    - podSelector: {}
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: keda
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monitoring
+
+serviceMonitor:
+  enabled: false       # needs the Prometheus Operator CRDs
+  interval: 15s
+  labels: {}

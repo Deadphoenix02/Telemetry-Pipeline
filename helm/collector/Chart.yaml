@@ -1,0 +1,6 @@
+apiVersion: v2
+name: collector
+description: Consumes GPU telemetry from the broker and inserts it into ClickHouse; scaled by KEDA on queue lag.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

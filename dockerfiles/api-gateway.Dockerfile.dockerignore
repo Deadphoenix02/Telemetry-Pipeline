@@ -1,0 +1,8 @@
+# Build-context ignore list for api-gateway.Dockerfile (BuildKit reads it from beside
+# the Dockerfile). Paths are relative to the context: api-gateway/.
+.git
+bin/
+coverage.*
+*.md
+**/*_test.go
+tests

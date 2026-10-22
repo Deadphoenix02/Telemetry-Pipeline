@@ -1,0 +1,32 @@
+# Local files
+clickhouse3shard.yaml
+
+# Binaries and build artifacts
+bin/
+# `go build` run inside a module directory writes the binary there, named after the module
+/broker/broker
+/collector/collector
+/api-gateway/api-gateway
+/telemetry-streamer/streamer
+/telemetry-streamer/telemetry-streamer
+/telemetry-streamer/fakeserver
+*.exe
+*.test
+coverage.out
+coverage.html
+coverage/
+
+# IDE and OS
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+# clickhouse test scratch
+clickhouse/.alerts-test/
+
+# cluster e2e run reports
+e2e/results/
+__pycache__/
+# make api-port: the background port-forward's log and process-group id
+.api-port/

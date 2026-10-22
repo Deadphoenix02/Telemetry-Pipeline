@@ -1,0 +1,101 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ts.fullname" . }}-metrics
+  labels:
+    {{- include "ts.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metrics
+  {{- with .Values.monitoring.serviceAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "ts.selector" (dict "root" . "component" "clickhouse") | nindent 4 }}
+  ports:
+    - name: metrics
+      port: 9363
+      targetPort: 9363
+    {{- if .Values.backup.enabled }}
+    - name: backup-metrics
+      port: 7171
+      targetPort: 7171
+    {{- end }}
+{{- if eq .Values.topology.mode "replicated" }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ts.fullname" . }}-keeper-metrics
+  labels:
+    {{- include "ts.labels" . | nindent 4 }}
+    app.kubernetes.io/component: keeper-metrics
+  {{- with .Values.monitoring.keeperServiceAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "ts.selector" (dict "root" . "component" "keeper") | nindent 4 }}
+  ports:
+    - name: metrics
+      port: {{ .Values.keeper.metricsPort }}
+      targetPort: {{ .Values.keeper.metricsPort }}
+{{- end }}
+{{- if .Values.monitoring.serviceMonitor.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "ts.fullname" . }}
+  labels:
+    {{- include "ts.labels" . | nindent 4 }}
+    {{- with .Values.monitoring.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "ts.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: metrics
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: {{ .Values.monitoring.serviceMonitor.interval }}
+    {{- if .Values.backup.enabled }}
+    - port: backup-metrics
+      path: /metrics
+      interval: {{ .Values.monitoring.serviceMonitor.interval }}
+    {{- end }}
+{{- if eq .Values.topology.mode "replicated" }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "ts.fullname" . }}-keeper
+  labels:
+    {{- include "ts.labels" . | nindent 4 }}
+    {{- with .Values.monitoring.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "ts.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: keeper-metrics
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: {{ .Values.monitoring.serviceMonitor.interval }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,36 @@
+// Wire contract between the streamer (client) and the ingest service (server).
+// The streamer encodes these messages by hand (internal/ingest/codec.go), so
+// no protoc step is needed; a protoc-generated server is wire-compatible.
+syntax = "proto3";
+
+package telemetry.v1;
+
+option go_package = "telemetry-streamer/internal/pb";
+
+service Ingest {
+  // One long-lived bidirectional stream per streamer instance.
+  // The producer ID is sent as the gRPC metadata header "x-producer-id".
+  rpc Stream(stream Record) returns (stream Ack);
+}
+
+// One CSV row as one record (no batching).
+message Record {
+  uint64 seq          = 1;  // per-stream-producer sequence, starts at 0
+  int64  timestamp_ns = 2;  // stamped once by the streamer; unchanged on resend
+  string metric_name  = 3;
+  string gpu_id       = 4;
+  string device       = 5;
+  string uuid         = 6;
+  string model_name   = 7;
+  string hostname     = 8;
+  string container    = 9;
+  string pod          = 10;
+  string namespace    = 11;
+  double value        = 12;
+}
+
+// Cumulative: every record with seq <= acked_up_to_seq is durably handed to the
+// queue. Sent every few ms, not per record. The server dedupes on (producer, seq).
+message Ack {
+  uint64 acked_up_to_seq = 1;
+}

@@ -1,0 +1,14 @@
+{{- if gt (int .Values.replicas) 1 }}
+# Voluntary disruptions (drains, upgrades) take one broker at a time; streamers fail over to the rest.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "broker.role" (dict "ctx" . "role" "pdb") }}
+  labels:
+    {{- include "broker.labels" . | nindent 4 }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "broker.selectorLabels" . | nindent 6 }}
+{{- end }}

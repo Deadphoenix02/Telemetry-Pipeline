@@ -1,0 +1,127 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "api-gateway.fullname" . }}
+  labels:
+    {{- include "api-gateway.labels" . | nindent 4 }}
+spec:
+  replicas: {{ int .Values.replicas }}
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      {{- include "api-gateway.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "api-gateway.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "api-gateway.role" (dict "ctx" . "role" "sa") }}
+      automountServiceAccountToken: false
+      # On SIGTERM: unready for drainDelaySeconds while still serving, then finish in-flight requests.
+      terminationGracePeriodSeconds: {{ add (int .Values.gateway.drainDelaySeconds) (int .Values.gateway.shutdownGraceSeconds) 5 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ .Values.runAsUser }}
+        runAsGroup: {{ .Values.runAsUser }}
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "api-gateway.selectorLabels" . | nindent 14 }}
+      containers:
+        - name: api-gateway
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: GATEWAY_HTTP_ADDR
+              value: {{ printf ":%d" (int .Values.service.port) | quote }}
+            - name: GATEWAY_ADMIN_ADDR
+              value: {{ printf ":%d" (int .Values.service.adminPort) | quote }}
+            - name: GATEWAY_CH_ADDR
+              value: {{ .Values.clickhouse.addr | quote }}
+            - name: GATEWAY_CH_DATABASE
+              value: {{ .Values.clickhouse.database | quote }}
+            - name: GATEWAY_CH_USER
+              value: {{ .Values.clickhouse.user | quote }}
+            - name: GATEWAY_CH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.clickhouse.passwordSecret.name }}
+                  key: {{ .Values.clickhouse.passwordSecret.key }}
+            - name: GATEWAY_CH_TABLE
+              value: {{ .Values.clickhouse.table | quote }}
+            - name: GATEWAY_CH_GPUS_TABLE
+              value: {{ .Values.clickhouse.gpusTable | quote }}
+            - name: GATEWAY_MAX_INFLIGHT
+              value: {{ int .Values.gateway.maxInFlight | quote }}
+            - name: GATEWAY_QUEUE_WAIT
+              value: {{ .Values.gateway.queueWait | quote }}
+            - name: GATEWAY_QUERY_TIMEOUT
+              value: {{ .Values.gateway.queryTimeout | quote }}
+            - name: GATEWAY_CHUNK_ROWS
+              value: {{ int .Values.gateway.chunkRows | quote }}
+            - name: GATEWAY_GPU_CACHE_TTL
+              value: {{ .Values.gateway.gpuCacheTTL | quote }}
+            - name: GATEWAY_DRAIN_DELAY
+              value: {{ printf "%ds" (int .Values.gateway.drainDelaySeconds) | quote }}
+            - name: GATEWAY_SHUTDOWN_GRACE
+              value: {{ printf "%ds" (int .Values.gateway.shutdownGraceSeconds) | quote }}
+            - name: GATEWAY_LOG_LEVEL
+              value: {{ .Values.gateway.logLevel | quote }}
+            - name: GOMEMLIMIT
+              value: {{ .Values.gateway.goMemLimit | quote }}
+            - name: GOMAXPROCS          # from the CPU limit, rounded up
+              valueFrom:
+                resourceFieldRef:
+                  containerName: api-gateway
+                  resource: limits.cpu
+                  divisor: "1"
+          ports:
+            - name: http
+              containerPort: {{ int .Values.service.port }}
+              protocol: TCP
+            - name: admin
+              containerPort: {{ int .Values.service.adminPort }}
+              protocol: TCP
+          # Liveness never depends on ClickHouse: a restart cannot fix it.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: admin
+            periodSeconds: 10
+            failureThreshold: 3
+          # Ready = ClickHouse answered the last ping; drops on SIGTERM.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: admin
+            periodSeconds: 5
+            failureThreshold: 2
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]

@@ -1,0 +1,231 @@
+{{- include "ts.validate" . -}}
+{{- $replicated := eq .Values.topology.mode "replicated" -}}
+apiVersion: clickhouse.altinity.com/v1
+kind: ClickHouseInstallation
+metadata:
+  name: {{ include "ts.fullname" . }}
+  labels:
+    {{- include "ts.labels" . | nindent 4 }}
+spec:
+  # A new value on every upgrade makes the operator reconcile the installation.
+  # Password hashes reach the pods as environment variables, which only change
+  # when a pod restarts: after rotating the Secret, restart the ClickHouse pods
+  # (for example kubectl rollout restart on the StatefulSets).
+  taskID: {{ .Release.Revision | quote }}
+  defaults:
+    templates:
+      podTemplate: clickhouse
+      dataVolumeClaimTemplate: data
+      serviceTemplate: cluster-ip
+  configuration:
+    users:
+      # The built-in default user may only be used from inside the pod.
+      default/networks/ip:
+        - "127.0.0.1"
+        - "::1"
+    {{- with .Values.clickhouse.config.maxThreads }}
+    profiles:
+      default/max_threads: {{ . | int }}
+    {{- end }}
+    files:
+      config.d/telemetry.xml: |
+        {{- include "ts.configXml" . | nindent 8 }}
+      users.d/telemetry-users.xml: |
+        {{- include "ts.usersXml" . | nindent 8 }}
+      {{- if .Values.security.tls.enabled }}
+      config.d/tls.xml: |
+        {{- include "ts.tlsXml" . | nindent 8 }}
+      {{- end }}
+    {{- if $replicated }}
+    zookeeper:
+      nodes:
+        - host: {{ printf "keeper-%s" (include "ts.keeperName" .) }}
+          port: 2181
+    {{- end }}
+    clusters:
+      - name: {{ .Values.topology.clusterName }}
+        {{- if $replicated }}
+        # Lets Distributed queries run on the other shards as the calling user.
+        secret:
+          auto: "true"
+        layout:
+          shards:
+          {{- range $i := until (int .Values.topology.shards) }}
+            - internalReplication: "true"
+              replicasCount: {{ $.Values.topology.replicas | int }}
+          {{- end }}
+        {{- else }}
+        layout:
+          shardsCount: 1
+          replicasCount: 1
+        {{- end }}
+  templates:
+    podTemplates:
+      - name: clickhouse
+        metadata:
+          labels:
+            {{- include "ts.selector" (dict "root" . "component" "clickhouse") | nindent 12 }}
+          annotations:
+            # Changes when the credentials Secret changes, so the operator rolls the pods and
+            # they pick up the new password hashes (see make rotate-credentials).
+            checksum/credentials: {{ include "ts.credentialsChecksum" . }}
+        spec:
+          terminationGracePeriodSeconds: {{ .Values.clickhouse.terminationGracePeriodSeconds | int }}
+          securityContext:
+            {{- include "ts.podSecurity" . | nindent 12 }}
+          {{- with .Values.clickhouse.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.clickhouse.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.clickhouse.affinity }}
+          affinity:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.clickhouse.topologySpreadConstraints }}
+          topologySpreadConstraints:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if .Values.security.tls.enabled }}
+          volumes:
+            - name: tls
+              secret:
+                secretName: {{ include "ts.fullname" . }}-tls
+                defaultMode: 0440
+                items:
+                  - {key: ca.crt, path: ca.crt}
+                  - {key: clickhouse.crt, path: clickhouse.crt}
+                  - {key: clickhouse.key, path: clickhouse.key}
+          {{- end }}
+          containers:
+            - name: clickhouse
+              image: "{{ .Values.clickhouse.image.repository }}:{{ .Values.clickhouse.image.tag }}"
+              imagePullPolicy: {{ .Values.clickhouse.image.pullPolicy }}
+              securityContext:
+                {{- include "ts.containerSecurity" . | nindent 16 }}
+              {{- with .Values.clickhouse.preStopSleepSeconds }}
+              lifecycle:
+                preStop:
+                  # Endpoint removal takes a moment to reach every node; keep serving until it has.
+                  exec:
+                    command: ["sh", "-c", "sleep {{ . | int }}"]
+              {{- end }}
+              env:
+                {{- range $u := list "migrator" "collector" "api" "backup" }}
+                - name: {{ upper $u }}_PASSWORD_SHA256
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "ts.secretName" $ }}
+                      key: {{ $u }}-password-sha256
+                {{- end }}
+              resources:
+                {{- toYaml .Values.clickhouse.resources | nindent 16 }}
+              {{- if .Values.security.tls.enabled }}
+              volumeMounts:
+                - name: tls
+                  mountPath: /etc/clickhouse-server/tls
+                  readOnly: true
+              {{- end }}
+            {{- if .Values.backup.enabled }}
+            - name: clickhouse-backup
+              image: "{{ .Values.backup.image.repository }}:{{ .Values.backup.image.tag }}"
+              imagePullPolicy: {{ .Values.backup.image.pullPolicy }}
+              command: ["sh", "-c"]
+              # Scheduling runs only on the first replica of each shard (pod name ends in -0-0).
+              args:
+                - |
+                  case "$POD_NAME" in
+                    *-0-0) exec clickhouse-backup server --watch ;;
+                    *) exec clickhouse-backup server ;;
+                  esac
+              env:
+                - name: POD_NAME
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.name
+                - name: CLICKHOUSE_HOST
+                  value: "127.0.0.1"
+                - name: CLICKHOUSE_PORT
+                  value: "9000"
+                - name: CLICKHOUSE_USERNAME
+                  value: backup
+                - name: CLICKHOUSE_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "ts.secretName" . }}
+                      key: backup-password
+                - name: API_LISTEN
+                  value: "0.0.0.0:7171"
+                - name: API_CREATE_INTEGRATION_TABLES
+                  value: "false"
+                - name: WATCH_INTERVAL
+                  value: {{ .Values.backup.interval | quote }}
+                - name: FULL_INTERVAL
+                  value: {{ .Values.backup.fullInterval | quote }}
+                - name: BACKUPS_TO_KEEP_LOCAL
+                  value: {{ .Values.backup.keepLocal | quote }}
+                - name: BACKUPS_TO_KEEP_REMOTE
+                  value: {{ .Values.backup.keepRemote | quote }}
+                - name: REMOTE_STORAGE
+                  value: s3
+                - name: S3_BUCKET
+                  value: {{ .Values.backup.s3.bucket | quote }}
+                - name: S3_REGION
+                  value: {{ .Values.backup.s3.region | quote }}
+                - name: S3_PATH
+                  value: "{{ .Values.backup.s3.path }}/$(POD_NAME)"
+                {{- with include "ts.s3Endpoint" . }}
+                - name: S3_ENDPOINT
+                  value: {{ . | quote }}
+                - name: S3_FORCE_PATH_STYLE
+                  value: "true"
+                - name: S3_DISABLE_SSL
+                  value: {{ hasPrefix "http://" . | quote }}
+                {{- end }}
+                - name: S3_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "ts.secretName" . }}
+                      key: s3-access-key
+                - name: S3_SECRET_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "ts.secretName" . }}
+                      key: s3-secret-key
+              securityContext:
+                {{- include "ts.containerSecurity" . | nindent 16 }}
+              ports:
+                - name: backup-api
+                  containerPort: 7171
+              volumeMounts:
+                - name: data
+                  mountPath: /var/lib/clickhouse
+              resources:
+                {{- toYaml .Values.backup.resources | nindent 16 }}
+            {{- end }}
+    volumeClaimTemplates:
+      - name: data
+        reclaimPolicy: {{ .Values.clickhouse.storage.reclaimPolicy }}
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          {{- with .Values.clickhouse.storage.storageClassName }}
+          storageClassName: {{ . }}
+          {{- end }}
+          resources:
+            requests:
+              storage: {{ .Values.clickhouse.storage.size }}
+    serviceTemplates:
+      # The operator's default service is a LoadBalancer; keep the database internal.
+      - name: cluster-ip
+        generateName: "clickhouse-{chi}"
+        spec:
+          type: ClusterIP
+          ports:
+            - name: http
+              port: 8123
+            - name: tcp
+              port: 9000

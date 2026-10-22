@@ -1,0 +1,88 @@
+{{- if .Values.migration.enabled }}
+{{- $img := .Values.migration.image | default dict }}
+{{- $repo := default .Values.clickhouse.image.repository $img.repository }}
+{{- $tag := default .Values.clickhouse.image.tag $img.tag }}
+{{- $hosts := include "ts.hosts" . }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "ts.fullname" . }}-migrate
+  labels:
+    {{- include "ts.labels" . | nindent 4 }}
+  annotations:
+    # Post hooks run after the chart's resources exist, so the ClickHouseInstallation,
+    # Secret and ConfigMaps are all in place. The Job waits for every host to answer.
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.migration.backoffLimit | int }}
+  activeDeadlineSeconds: {{ .Values.migration.activeDeadlineSeconds | int }}
+  template:
+    metadata:
+      labels:
+        {{- include "ts.selector" (dict "root" . "component" "migrations") | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: "{{ $repo }}:{{ $tag }}"
+          imagePullPolicy: {{ .Values.clickhouse.image.pullPolicy }}
+          command: ["bash", "/scripts/migrate.sh"]
+          env:
+            - name: CH_HOST
+              value: {{ index (splitList "," $hosts) 0 | quote }}
+            - name: WAIT_HOSTS
+              value: {{ $hosts | quote }}
+            - name: WAIT_TIMEOUT
+              value: {{ .Values.migration.waitTimeoutSeconds | int | quote }}
+            - name: CH_PORT
+              value: "9000"
+            - name: CH_USER
+              value: migrator
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ts.secretName" . }}
+                  key: migrator-password
+            - name: MIGRATIONS_DIR
+              value: /migrations
+            - name: CLUSTER
+              value: {{ .Values.topology.clusterName | quote }}
+            - name: TOPOLOGY_MODE
+              value: {{ .Values.topology.mode | quote }}
+            - name: TTL_INTERVAL
+              value: {{ .Values.retention.ttl | quote }}
+            - name: PARTITION
+              value: {{ .Values.retention.partition | quote }}
+          resources:
+            {{- toYaml .Values.migration.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+            - name: migrations
+              mountPath: /migrations
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: scripts
+          configMap:
+            name: {{ include "ts.fullname" . }}-migrate-script
+        - name: migrations
+          configMap:
+            name: {{ include "ts.fullname" . }}-migrations
+        - name: tmp
+          emptyDir: {}
+{{- end }}

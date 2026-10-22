@@ -1,0 +1,132 @@
+{{- if .Values.observability.prometheus.enabled }}
+{{- $p := .Values.observability.prometheus }}
+{{- $name := printf "%s-prometheus" (include "ts.fullname" .) }}
+{{- $replicated := eq .Values.topology.mode "replicated" }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "ts.labels" . | nindent 4 }}
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: {{ $p.scrapeInterval }}
+      evaluation_interval: {{ $p.scrapeInterval }}
+    rule_files:
+      - /etc/prometheus/alerts.yaml
+    scrape_configs:
+      # Static targets from the topology: the per-pod services the operator creates.
+      - job_name: clickhouse
+        static_configs:
+          - targets:
+              {{- range $h := splitList "," (include "ts.hosts" .) }}
+              - {{ $h }}:9363
+              {{- end }}
+      {{- if $replicated }}
+      - job_name: keeper
+        static_configs:
+          - targets:
+              {{- range $h := splitList "," (include "ts.keeperHosts" .) }}
+              - {{ $h }}:{{ $.Values.keeper.metricsPort }}
+              {{- end }}
+      {{- end }}
+      {{- if .Values.backup.enabled }}
+      - job_name: clickhouse-backup
+        static_configs:
+          - targets:
+              {{- range $h := splitList "," (include "ts.hosts" .) }}
+              - {{ $h }}:7171
+              {{- end }}
+      {{- end }}
+      {{- with $p.operatorTarget }}
+      - job_name: operator
+        static_configs:
+          - targets: [{{ . | quote }}]
+      {{- end }}
+  alerts.yaml: |
+    {{- if .Values.observability.alerts.enabled }}
+    {{- tpl (.Files.Get "files/alerts.yaml") . | nindent 4 }}
+    {{- else }}
+    groups: []
+    {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "ts.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "ts.selector" (dict "root" . "component" "prometheus") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ts.selector" (dict "root" . "component" "prometheus") | nindent 8 }}
+      annotations:
+        checksum/config: {{ printf "%s%s" (tpl (.Files.Get "files/alerts.yaml") .) (toJson $p) | sha256sum | trunc 16 }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: prometheus
+          image: "{{ $p.image.repository }}:{{ $p.image.tag }}"
+          imagePullPolicy: {{ $p.image.pullPolicy }}
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+            - --storage.tsdb.retention.time={{ $p.retention }}
+            - --web.enable-lifecycle
+          ports:
+            - name: http
+              containerPort: 9090
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: http
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml $p.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+            - name: data
+              mountPath: /prometheus
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $name }}
+        - name: data
+          emptyDir:
+            sizeLimit: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "ts.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "ts.selector" (dict "root" . "component" "prometheus") | nindent 4 }}
+  ports:
+    - name: http
+      port: 9090
+      targetPort: http
+{{- end }}

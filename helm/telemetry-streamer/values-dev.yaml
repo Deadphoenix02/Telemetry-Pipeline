@@ -1,0 +1,31 @@
+# Dev environment (the only environment file). Inherits the resource budget
+# from values.yaml. Streams to the 3 brokers of the release "broker" in the same namespace.
+image:
+  repository: telemetry-streamer
+  tag: dev
+  pullPolicy: IfNotPresent   # image is loaded into the local cluster
+
+streamer:
+  replicas: 2          # 2 x 1000 rows/s fits the demo budget; scale with --set streamer.replicas=N (1..10)
+  rateRowsPerSec: 1000
+  logLevel: info
+
+brokers:
+  replicas: 3          # must match the broker chart's replicas (values-dev.yaml there)
+
+networkPolicy:
+  enabled: true
+  ingest:
+    port: 7070
+    to:
+      - podSelector:
+          matchLabels:
+            app.kubernetes.io/name: broker
+
+serviceMonitor:
+  enabled: false
+
+podAnnotations:             # scraped by the cluster Prometheus (monitoring/)
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "9100"
+  prometheus.io/path: /metrics

@@ -1,0 +1,8 @@
+# Build-context ignore list for broker.Dockerfile (BuildKit reads it from beside
+# the Dockerfile). Paths are relative to the context: broker/.
+.git
+bin/
+coverage.*
+*.md
+**/*_test.go
+proto

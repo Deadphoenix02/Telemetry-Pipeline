@@ -1,0 +1,172 @@
+{{- /*
+Alert rules, rendered with tpl so job names, windows and thresholds follow the values.
+Metric names were checked against the /metrics endpoint of ClickHouse 25.8.
+*/ -}}
+{{- $f := .Values.observability.alerts.for -}}
+{{- $ch := include "ts.jobClickHouse" . -}}
+{{- $kp := include "ts.jobKeeper" . -}}
+{{- $sel := printf "job=%q" $ch -}}
+{{- $replicated := eq .Values.topology.mode "replicated" -}}
+groups:
+  - name: telemetry-store.availability
+    rules:
+      - alert: ClickHouseDown
+        expr: up{ {{- $sel -}} } == 0
+        for: {{ $f.fast }}
+        labels: {severity: critical}
+        annotations:
+          summary: "ClickHouse {{ "{{ $labels.instance }}" }} is not answering on its metrics port"
+{{- if $replicated }}
+      - alert: KeeperDown
+        expr: up{job="{{ $kp }}"} == 0
+        for: {{ $f.fast }}
+        labels: {severity: warning}
+        annotations:
+          summary: "Keeper {{ "{{ $labels.instance }}" }} is down; the ensemble still has quorum while a majority is up"
+      - alert: KeeperQuorumLost
+        expr: sum(up{job="{{ $kp }}"}) < {{ add (div (int .Values.keeper.replicas) 2) 1 }}
+        for: {{ $f.fast }}
+        labels: {severity: critical}
+        annotations:
+          summary: "Fewer than {{ add (div (int .Values.keeper.replicas) 2) 1 }} Keepers are up: replicated tables are read-only and inserts fail"
+      - alert: ClickHouseKeeperSessionLost
+        expr: ClickHouseMetrics_ZooKeeperSession{ {{- $sel -}} } == 0
+        for: {{ $f.fast }}
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ "{{ $labels.instance }}" }} has no Keeper session"
+      - alert: ClickHouseReplicaReadOnly
+        expr: ClickHouseMetrics_ReadonlyReplica{ {{- $sel -}} } > 0
+        for: {{ $f.fast }}
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ "{{ $labels.instance }}" }} has {{ "{{ $value }}" }} read-only replicated tables"
+  - name: telemetry-store.replication
+    rules:
+      - alert: ClickHouseReplicationLag
+        expr: ClickHouseAsyncMetrics_ReplicasMaxAbsoluteDelay{ {{- $sel -}} } > 300
+        for: {{ $f.medium }}
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ "{{ $labels.instance }}" }} is {{ "{{ $value }}" }}s behind its replica"
+      - alert: ClickHouseReplicationQueueLarge
+        expr: ClickHouseAsyncMetrics_ReplicasMaxQueueSize{ {{- $sel -}} } > 100
+        for: {{ $f.slow }}
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ "{{ $labels.instance }}" }} has {{ "{{ $value }}" }} replication tasks queued"
+      - alert: ClickHouseDistributedQueueBroken
+        expr: ClickHouseMetrics_BrokenDistributedFilesToInsert{ {{- $sel -}} } > 0
+        for: {{ $f.fast }}
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ "{{ $labels.instance }}" }} has Distributed insert files it cannot send"
+      - alert: ClickHouseDistributedQueueBacklog
+        expr: ClickHouseMetrics_DistributedFilesToInsert{ {{- $sel -}} } > 1000
+        for: {{ $f.slow }}
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ "{{ $labels.instance }}" }} has {{ "{{ $value }}" }} Distributed insert files pending"
+{{- end }}
+  - name: telemetry-store.ingestion
+    rules:
+      - alert: ClickHouseTooManyParts
+        expr: ClickHouseAsyncMetrics_MaxPartCountForPartition{ {{- $sel -}} } > 300
+        for: {{ $f.medium }}
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ "{{ $labels.instance }}" }} has a partition with {{ "{{ $value }}" }} parts; inserts are too small or merges are behind"
+      - alert: ClickHouseTooManyPartsCritical
+        expr: ClickHouseAsyncMetrics_MaxPartCountForPartition{ {{- $sel -}} } > 1000
+        for: {{ $f.fast }}
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ "{{ $labels.instance }}" }} has a partition with {{ "{{ $value }}" }} parts; inserts are about to be delayed or rejected"
+      - alert: ClickHouseInsertsDelayed
+        expr: rate(ClickHouseProfileEvents_DelayedInserts{ {{- $sel -}} }[5m]) > 0
+        for: {{ $f.medium }}
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ "{{ $labels.instance }}" }} is throttling inserts because of the part count"
+      - alert: ClickHouseInsertsRejected
+        expr: increase(ClickHouseProfileEvents_RejectedInserts{ {{- $sel -}} }[5m]) > 0
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ "{{ $labels.instance }}" }} rejected inserts (too many parts)"
+      - alert: ClickHouseInsertErrors
+        expr: rate(ClickHouseProfileEvents_FailedInsertQuery{ {{- $sel -}} }[5m]) > 0
+        for: {{ $f.medium }}
+        labels: {severity: warning}
+        annotations:
+          summary: "Inserts are failing on {{ "{{ $labels.instance }}" }}"
+      - alert: ClickHouseQueryErrorRate
+        expr: |
+          rate(ClickHouseProfileEvents_FailedQuery{ {{- $sel -}} }[5m])
+            / clamp_min(rate(ClickHouseProfileEvents_Query{ {{- $sel -}} }[5m]), 0.001) > 0.05
+        for: {{ $f.slow }}
+        labels: {severity: warning}
+        annotations:
+          summary: "More than 5% of queries fail on {{ "{{ $labels.instance }}" }}"
+{{- if .Values.observability.alerts.ingestStalled }}
+      - alert: TelemetryIngestionStalled
+        expr: sum(rate(ClickHouseProfileEvents_InsertedRows{ {{- $sel -}} }[10m])) == 0
+        for: {{ $f.slow }}
+        labels: {severity: warning}
+        annotations:
+          summary: "No telemetry rows were inserted anywhere in the cluster"
+{{- end }}
+  - name: telemetry-store.resources
+    rules:
+      - alert: ClickHouseDiskAlmostFull
+        expr: |
+          ClickHouseAsyncMetrics_DiskAvailable_default{ {{- $sel -}} }
+            / ClickHouseAsyncMetrics_DiskTotal_default{ {{- $sel -}} } < 0.15
+        for: {{ $f.medium }}
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ "{{ $labels.instance }}" }} has less than 15% disk left; check the TTL is dropping parts"
+      - alert: ClickHouseDiskCritical
+        expr: |
+          ClickHouseAsyncMetrics_DiskAvailable_default{ {{- $sel -}} }
+            / ClickHouseAsyncMetrics_DiskTotal_default{ {{- $sel -}} } < 0.05
+        for: {{ $f.fast }}
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ "{{ $labels.instance }}" }} has less than 5% disk left; inserts will fail soon"
+      # ClickHouse refuses queries once its resident memory passes max_server_memory_usage
+      # (clickhouse.config.maxServerMemoryRatio of the limit); warn at 90% of that cap. Resident
+      # allocator memory, not cgroup usage: cgroup usage includes reclaimable page cache.
+      - alert: ClickHouseMemoryNearLimit
+        expr: |
+          ClickHouseAsyncMetrics_jemalloc_resident{ {{- $sel -}} }
+            / (ClickHouseAsyncMetrics_CGroupMemoryTotal{ {{- $sel -}} } > 0)
+            > {{ mulf .Values.clickhouse.config.maxServerMemoryRatio 0.9 }}
+        for: {{ $f.medium }}
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ "{{ $labels.instance }}" }} is near its server memory cap; queries will be refused with MEMORY_LIMIT_EXCEEDED"
+      - alert: ClickHouseMergeBacklog
+        expr: |
+          ClickHouseMetrics_BackgroundMergesAndMutationsPoolTask{ {{- $sel -}} }
+            >= ClickHouseMetrics_BackgroundMergesAndMutationsPoolSize{ {{- $sel -}} }
+        for: {{ $f.slow }}
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ "{{ $labels.instance }}" }} has every merge slot busy"
+{{- if .Values.backup.enabled }}
+  - name: telemetry-store.backup
+    rules:
+      # clickhouse-backup metric names from its documentation; not yet checked against a live sidecar.
+      - alert: ClickHouseBackupFailed
+        expr: clickhouse_backup_last_backup_success == 0
+        for: {{ $f.fast }}
+        labels: {severity: critical}
+        annotations:
+          summary: "The last backup on {{ "{{ $labels.instance }}" }} failed"
+      - alert: ClickHouseBackupTooOld
+        expr: time() - clickhouse_backup_last_create_finish > {{ .Values.observability.alerts.backupMaxAgeSeconds | int }}
+        for: {{ $f.medium }}
+        labels: {severity: warning}
+        annotations:
+          summary: "No backup finished on {{ "{{ $labels.instance }}" }} in the last {{ .Values.observability.alerts.backupMaxAgeSeconds | int }}s"
+{{- end }}

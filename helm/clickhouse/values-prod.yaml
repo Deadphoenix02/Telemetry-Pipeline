@@ -1,0 +1,103 @@
+# Sharded and replicated. Sizes below are starting points: the real numbers
+# depend on rows per second, metrics per GPU and retention, which are not known
+# yet. Measure first, then adjust storage and resources.
+topology:
+  mode: replicated
+  clusterName: telemetry
+  shards: 2
+  replicas: 2
+
+retention:
+  ttl: "7 DAY"
+  partition: day
+
+clickhouse:
+  storage:
+    size: 50Gi
+    storageClassName: ""          # set to a fast, expandable class
+  resources:
+    requests:
+      cpu: "2"
+      memory: 8Gi
+    limits:
+      memory: 8Gi
+  config:
+    maxServerMemoryRatio: 0.8
+    markCacheSize: 1073741824
+    backgroundPoolSize: 8
+    maxThreads: 0                 # let ClickHouse use the available cores
+    systemLogs:
+      enabled: true
+      ttlDays: 7
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - topologyKey: kubernetes.io/hostname
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: telemetry-store
+              app.kubernetes.io/component: clickhouse
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/name: telemetry-store
+          app.kubernetes.io/component: clickhouse
+
+keeper:
+  replicas: 3
+  storage:
+    size: 10Gi
+    storageClassName: ""          # fast disks matter most here
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - topologyKey: kubernetes.io/hostname
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: telemetry-store
+              app.kubernetes.io/component: keeper
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/name: telemetry-store
+          app.kubernetes.io/component: keeper
+
+# The chart's NetworkPolicy denies all other ingress, so Prometheus has to be
+# admitted explicitly or the ServiceMonitor below scrapes nothing. This assumes
+# Prometheus runs in a namespace called "monitoring"; change it to match yours.
+networkPolicy:
+  monitoring:
+    from:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: monitoring
+
+
+monitoring:
+  serviceMonitor:
+    enabled: true
+
+# Production backups go to real object storage, not the in-chart MinIO. Supply the bucket
+# credentials as s3-access-key / s3-secret-key in auth.existingSecret (see values.yaml).
+backup:
+  enabled: true
+  interval: 1h
+  fullInterval: 24h
+  keepRemote: 7
+  s3:
+    endpoint: ""                  # empty means AWS S3; set for another S3-compatible store
+    bucket: telemetry-backups     # placeholder
+    region: us-east-1             # placeholder
+  minio:
+    enabled: false
+
+security:
+  # Placeholder: set to the production pod CIDR (and any other client networks) before deploying.
+  allowedNetworks:
+    - 10.0.0.0/8

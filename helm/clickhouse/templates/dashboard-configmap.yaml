@@ -1,0 +1,14 @@
+{{- if .Values.observability.dashboard.enabled }}
+# Grafana dashboard, picked up by the Grafana sidecar (label grafana_dashboard: "1").
+# Nothing in the dev profile runs Grafana; import files/dashboard.json by hand there.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ts.fullname" . }}-dashboard
+  labels:
+    {{- include "ts.labels" . | nindent 4 }}
+    grafana_dashboard: "1"
+data:
+  telemetry-store.json: |
+    {{- .Files.Get "files/dashboard.json" | replace "__CH_JOB__" (include "ts.jobClickHouse" .) | replace "__KEEPER_JOB__" (include "ts.jobKeeper" .) | nindent 4 }}
+{{- end }}

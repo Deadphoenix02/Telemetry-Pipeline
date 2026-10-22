@@ -1,0 +1,12 @@
+# Build-context ignore list for collector.Dockerfile (BuildKit reads it from beside
+# the Dockerfile). The context is the repo root: send only the two Go modules.
+*
+!broker/go.mod
+!broker/go.sum
+!broker/pkg
+!broker/internal
+!collector/go.mod
+!collector/go.sum
+!collector/cmd
+!collector/internal
+**/*_test.go

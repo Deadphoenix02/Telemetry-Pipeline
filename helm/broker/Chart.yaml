@@ -1,0 +1,6 @@
+apiVersion: v2
+name: broker
+description: Single-broker WAL message queue for GPU telemetry (Ingest, Fetch and the consumer-group coordinator).
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

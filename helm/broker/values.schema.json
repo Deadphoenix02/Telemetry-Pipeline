@@ -1,0 +1,43 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "replicas": { "type": "integer", "minimum": 1, "maximum": 5 },
+    "broker": {
+      "type": "object",
+      "properties": {
+        "partitions": { "type": "integer", "minimum": 1, "maximum": 1024 },
+        "segmentKB": { "type": "integer", "minimum": 64 },
+        "flushInterval": { "type": "string", "pattern": "^[0-9]+(ms|s)$" },
+        "truncateInterval": { "type": "string", "pattern": "^[0-9]+(ms|s)$" },
+        "quotaMB": { "type": "integer", "minimum": 16 },
+        "linger": { "type": "string", "pattern": "^[0-9]+(ms|s)$" },
+        "maxFrameKB": { "type": "integer", "minimum": 1, "maximum": 1024 },
+        "fetchMaxKB": { "type": "integer", "minimum": 1, "maximum": 2048 },
+        "fetchMaxWait": { "type": "string", "pattern": "^[0-9]+(ms|s)$" },
+        "group": { "type": "string", "minLength": 1 },
+        "sessionTimeout": { "type": "string", "pattern": "^[0-9]+(ms|s)$" },
+        "heartbeatInterval": { "type": "string", "pattern": "^[0-9]+(ms|s)$" },
+        "joinWindow": { "type": "string", "pattern": "^[0-9]+(ms|s)$" },
+        "rebalanceTimeout": { "type": "string", "pattern": "^[0-9]+(ms|s)$" },
+        "drainTimeoutSeconds": { "type": "integer", "minimum": 1 },
+        "logLevel": { "type": "string", "enum": ["debug", "info", "warn", "error"] }
+      }
+    },
+    "service": {
+      "type": "object",
+      "properties": {
+        "grpcPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "httpPort": { "type": "integer", "minimum": 1, "maximum": 65535 }
+      }
+    },
+    "persistence": {
+      "type": "object",
+      "properties": {
+        "size": { "type": "string" },
+        "storageClass": { "type": "string" },
+        "retain": { "type": "boolean" }
+      }
+    }
+  }
+}

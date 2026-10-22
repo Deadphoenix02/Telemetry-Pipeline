@@ -1,0 +1,126 @@
+# A StatefulSet so every pod has a stable ordinal (telemetry-streamer-N): the
+# streamer sends N as its streamer_id, which the broker uses to drop retries and
+# ClickHouse keeps in its deduplication key. Scale-down removes the highest
+# ordinals first.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "telemetry-streamer.fullname" . }}
+  labels:
+    {{- include "telemetry-streamer.labels" . | nindent 4 }}
+spec:
+  replicas: {{ int .Values.streamer.replicas }}
+  serviceName: {{ include "telemetry-streamer.role" (dict "ctx" . "role" "headless") }}
+  podManagementPolicy: Parallel   # pods are independent: start and stop them together
+  revisionHistoryLimit: 5
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      {{- include "telemetry-streamer.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "telemetry-streamer.labels" . | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "telemetry-streamer.role" (dict "ctx" . "role" "sa") }}
+      automountServiceAccountToken: false
+      # SIGTERM flush/ack deadline (graceSeconds) plus headroom.
+      terminationGracePeriodSeconds: {{ add (int .Values.streamer.graceSeconds) 10 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ .Values.runAsUser }}
+        runAsGroup: {{ .Values.runAsUser }}
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "telemetry-streamer.selectorLabels" . | nindent 14 }}
+      containers:
+        - name: streamer
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: STREAMER_RATE_ROWS_PER_SEC
+              value: {{ int .Values.streamer.rateRowsPerSec | quote }}
+            - name: STREAMER_TICK
+              value: {{ .Values.streamer.tick | quote }}
+            - name: STREAMER_MODE
+              value: {{ .Values.streamer.mode | quote }}
+            - name: STREAMER_MAX_MEMORY_MB
+              value: {{ int .Values.streamer.maxMemoryMB | quote }}
+            - name: STREAMER_GRACE
+              value: {{ printf "%ds" (int .Values.streamer.graceSeconds) | quote }}
+            - name: STREAMER_LOG_LEVEL
+              value: {{ .Values.streamer.logLevel | quote }}
+            - name: STREAMER_STATS_INTERVAL
+              value: {{ .Values.streamer.statsInterval | quote }}
+            - name: STREAMER_METRICS_ADDR
+              value: {{ printf ":%d" (int .Values.service.port) | quote }}
+            {{- with include "telemetry-streamer.targets" . }}
+            - name: STREAMER_TARGETS
+              value: {{ . | quote }}
+            {{- end }}
+            - name: STREAMER_WINDOW
+              value: {{ .Values.streamer.window | quote }}
+            - name: STREAMER_WINDOW_MAX_RECORDS
+              value: {{ int .Values.streamer.windowMaxRecords | quote }}
+            - name: STREAMER_CONNECT_TIMEOUT
+              value: {{ .Values.streamer.connectTimeout | quote }}
+            - name: STREAMER_ACK_TIMEOUT
+              value: {{ .Values.streamer.ackTimeout | quote }}
+            - name: STREAMER_HOME_PROBE
+              value: {{ .Values.streamer.homeProbe | quote }}
+            - name: GOMEMLIMIT
+              value: {{ .Values.streamer.goMemLimit | quote }}
+            - name: GOMAXPROCS          # from the CPU limit, rounded up
+              valueFrom:
+                resourceFieldRef:
+                  containerName: streamer
+                  resource: limits.cpu
+                  divisor: "1"
+          ports:
+            - name: metrics
+              containerPort: {{ int .Values.service.port }}
+              protocol: TCP
+          # HTTP starts before the CSV loads, so startup/liveness answer during a load.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            periodSeconds: 5
+            failureThreshold: 30
+          # Liveness never depends on the downstream: an ingest outage must not restart the pod.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            periodSeconds: 10
+            failureThreshold: 3
+          # Ready = CSV loaded and a stream connected to some broker; drops to 503 on SIGTERM.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: metrics
+            periodSeconds: 5
+            failureThreshold: 2
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]

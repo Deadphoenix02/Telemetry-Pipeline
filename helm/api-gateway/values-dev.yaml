@@ -1,0 +1,21 @@
+# Dev environment (the only environment file). Inherits the resource budget
+# from values.yaml. Reads the telemetry-store release in the same namespace.
+image:
+  repository: api-gateway
+  tag: dev
+  pullPolicy: IfNotPresent   # image is loaded into the local cluster
+
+gateway:
+  logLevel: info
+
+nodePort:                   # http://$(minikube ip):30080
+  enabled: true
+  port: 30080
+
+networkPolicy:
+  enabled: true
+
+podAnnotations:             # scraped by the cluster Prometheus (monitoring/)
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "9090"
+  prometheus.io/path: /metrics

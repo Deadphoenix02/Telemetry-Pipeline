@@ -1,0 +1,38 @@
+# Clients (streamers, collectors, KEDA) use this Service: <fullname>:grpcPort and :httpPort.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "broker.fullname" . }}
+  labels:
+    {{- include "broker.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "broker.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: grpc
+      port: {{ .Values.service.grpcPort }}
+      targetPort: grpc
+      protocol: TCP
+      appProtocol: grpc
+    - name: http
+      port: {{ .Values.service.httpPort }}
+      targetPort: http
+      protocol: TCP
+---
+# Governing headless Service of the StatefulSet (stable pod DNS).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "broker.role" (dict "ctx" . "role" "headless") }}
+  labels:
+    {{- include "broker.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    {{- include "broker.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: grpc
+      port: {{ .Values.service.grpcPort }}
+      targetPort: grpc

@@ -1,0 +1,30 @@
+telemetry-streamer installed as "{{ include "telemetry-streamer.fullname" . }}" in namespace {{ .Release.Namespace }}.
+
+The telemetry CSV is baked into the image (STREAMER_CSV_PATH is set by the image). To change it, rebuild the image and upgrade.
+
+CHECK:
+     kubectl -n {{ .Release.Namespace }} rollout status sts/{{ include "telemetry-streamer.fullname" . }}
+     kubectl -n {{ .Release.Namespace }} logs sts/{{ include "telemetry-streamer.fullname" . }} -f
+     kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "telemetry-streamer.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+   then: curl localhost:{{ .Values.service.port }}/metrics   (and /readyz)
+Each pod sends its ordinal as streamer_id (telemetry-streamer-N -> N).
+{{- $targets := include "telemetry-streamer.targets" . }}
+{{- if $targets }}
+Brokers: {{ $targets }}
+Each pod streams to its home broker (streamer_id mod {{ len (splitList "," $targets) }}) and fails over to the
+next one without pausing; it pauses only while every broker is unavailable.
+{{- else }}
+
+NOTE: no brokers (brokers.replicas is 0 and streamer.target is empty), so records are
+DISCARDED (stats are still logged).
+{{- end }}
+{{- if and $targets .Values.networkPolicy.enabled (not .Values.networkPolicy.ingest.to) }}
+
+WARNING: brokers are set but networkPolicy.ingest.to is empty, so the NetworkPolicy
+blocks egress to them. Set networkPolicy.ingest.to.
+{{- end }}
+{{- if gt (int .Values.streamer.rateRowsPerSec) 5000 }}
+
+WARNING: {{ .Values.streamer.rateRowsPerSec }} rows/s is untested against the
+{{ .Values.resources.limits.cpu }} CPU / {{ .Values.resources.limits.memory }} limits. Measure first; higher rates need higher limits.
+{{- end }}

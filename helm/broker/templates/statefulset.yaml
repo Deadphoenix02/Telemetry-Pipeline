@@ -1,0 +1,158 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "broker.fullname" . }}
+  labels:
+    {{- include "broker.labels" . | nindent 4 }}
+spec:
+  replicas: {{ int .Values.replicas }}
+  serviceName: {{ include "broker.role" (dict "ctx" . "role" "headless") }}
+  podManagementPolicy: OrderedReady
+  updateStrategy:
+    type: RollingUpdate
+  revisionHistoryLimit: 5
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: {{ ternary "Retain" "Delete" .Values.persistence.retain }}
+    whenScaled: Retain
+  selector:
+    matchLabels:
+      {{- include "broker.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "broker.labels" . | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "broker.role" (dict "ctx" . "role" "sa") }}
+      automountServiceAccountToken: false
+      # Drain (producer acks), final fsync and offsets write, plus headroom.
+      terminationGracePeriodSeconds: {{ add (int .Values.broker.drainTimeoutSeconds) 20 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ .Values.runAsUser }}
+        runAsGroup: {{ .Values.runAsUser }}
+        fsGroup: {{ .Values.runAsUser }}   # the PVC must be writable by the broker
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      {{- if gt (int .Values.replicas) 1 }}
+      # Spread brokers over nodes where there are several, so one node does not take them all.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    {{- include "broker.selectorLabels" . | nindent 20 }}
+      {{- end }}
+      containers:
+        - name: broker
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: BROKER_LISTEN
+              value: {{ printf ":%d" (int .Values.service.grpcPort) | quote }}
+            - name: BROKER_HTTP_ADDR
+              value: {{ printf ":%d" (int .Values.service.httpPort) | quote }}
+            - name: BROKER_DATA_DIR
+              value: /data
+            - name: BROKER_PARTITIONS
+              value: {{ int .Values.broker.partitions | quote }}
+            - name: BROKER_SEGMENT_KB
+              value: {{ int .Values.broker.segmentKB | quote }}
+            - name: BROKER_FLUSH_INTERVAL
+              value: {{ .Values.broker.flushInterval | quote }}
+            - name: BROKER_TRUNCATE_INTERVAL
+              value: {{ .Values.broker.truncateInterval | quote }}
+            - name: BROKER_QUOTA_MB
+              value: {{ int .Values.broker.quotaMB | quote }}
+            - name: BROKER_LINGER
+              value: {{ .Values.broker.linger | quote }}
+            - name: BROKER_MAX_FRAME_KB
+              value: {{ int .Values.broker.maxFrameKB | quote }}
+            - name: BROKER_FETCH_MAX_KB
+              value: {{ int .Values.broker.fetchMaxKB | quote }}
+            - name: BROKER_FETCH_MAX_WAIT
+              value: {{ .Values.broker.fetchMaxWait | quote }}
+            - name: BROKER_GROUP
+              value: {{ .Values.broker.group | quote }}
+            - name: BROKER_SESSION_TIMEOUT
+              value: {{ .Values.broker.sessionTimeout | quote }}
+            - name: BROKER_HEARTBEAT_INTERVAL
+              value: {{ .Values.broker.heartbeatInterval | quote }}
+            - name: BROKER_JOIN_WINDOW
+              value: {{ .Values.broker.joinWindow | quote }}
+            - name: BROKER_REBALANCE_TIMEOUT
+              value: {{ .Values.broker.rebalanceTimeout | quote }}
+            - name: BROKER_DRAIN_TIMEOUT
+              value: {{ printf "%ds" (int .Values.broker.drainTimeoutSeconds) | quote }}
+            - name: BROKER_LOG_LEVEL
+              value: {{ .Values.broker.logLevel | quote }}
+            - name: GOMEMLIMIT
+              value: {{ .Values.broker.goMemLimit | quote }}
+            - name: GOMAXPROCS          # from the CPU limit, rounded up
+              valueFrom:
+                resourceFieldRef:
+                  containerName: broker
+                  resource: limits.cpu
+                  divisor: "1"
+          ports:
+            - name: grpc
+              containerPort: {{ int .Values.service.grpcPort }}
+              protocol: TCP
+            - name: http
+              containerPort: {{ int .Values.service.httpPort }}
+              protocol: TCP
+          # HTTP starts before log recovery, so startup/liveness answer during it.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          # Ready = log recovered and gRPC serving; drops on SIGTERM.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 2
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "broker.selectorLabels" . | nindent 10 }}
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with .Values.persistence.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.size }}

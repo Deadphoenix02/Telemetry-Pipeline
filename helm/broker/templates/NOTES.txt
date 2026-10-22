@@ -1,0 +1,23 @@
+broker installed as "{{ include "broker.fullname" . }}" in namespace {{ .Release.Namespace }}.
+
+  {{ .Values.replicas }} independent broker(s). Streamers and collectors address each one directly:
+{{- range $i := until (int .Values.replicas) }}
+    {{ include "broker.fullname" $ }}-{{ $i }}.{{ include "broker.role" (dict "ctx" $ "role" "headless") }}:{{ $.Values.service.grpcPort }}   (HTTP /lag /metrics on :{{ $.Values.service.httpPort }})
+{{- end }}
+  Set brokers.replicas: {{ .Values.replicas }} in the telemetry-streamer and collector charts to match.
+
+CHECK:
+     kubectl -n {{ .Release.Namespace }} rollout status sts/{{ include "broker.fullname" . }}
+     kubectl -n {{ .Release.Namespace }} logs sts/{{ include "broker.fullname" . }} -f
+     kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "broker.fullname" . }} {{ .Values.service.httpPort }}:{{ .Values.service.httpPort }}
+   then: curl localhost:{{ .Values.service.httpPort }}/lag   (and /metrics, /readyz)
+
+The partition count ({{ .Values.broker.partitions }}) is written to the PVC on first start. Changing
+broker.partitions later makes the broker refuse to start until the PVC is deleted.
+{{- $size := .Values.persistence.size }}
+{{- $sizeMi := ternary (mul (int (trimSuffix "Gi" $size)) 1024) (int (trimSuffix "Mi" $size)) (hasSuffix "Gi" $size) }}
+{{- if ge (int .Values.broker.quotaMB) (int $sizeMi) }}
+
+WARNING: broker.quotaMB ({{ .Values.broker.quotaMB }}) is not below persistence.size
+({{ .Values.persistence.size }}); the disk can fill before producers are paused.
+{{- end }}

@@ -1,0 +1,95 @@
+# Dev and minikube profile. Production-shaped topology on one laptop: 2 shards x 2 replicas,
+# 3 Keepers, no backups. Memory is the tighter limit (roughly 5 GiB for all pods at their
+# limits). On minikube's hostpath storage the volume sizes below are not enforced and cannot
+# be expanded; the short TTL keeps test data from piling up.
+# Start minikube with at least: minikube start --cpus 4 --memory 8192 --disk-size 20g
+topology:
+  mode: replicated
+  clusterName: telemetry
+  shards: 2
+  replicas: 2
+
+retention:
+  ttl: "4 HOUR"
+  partition: hour
+
+clickhouse:
+  storage:
+    size: 1Gi
+    reclaimPolicy: Delete
+  resources:
+    requests:
+      cpu: 150m
+      memory: 512Mi
+    limits:
+      # 768Mi was too small: a replicated 25.8 server holds ~480 MiB of heap at idle (allocator,
+      # thread pools, replication state), which left no room under the 80% server cap.
+      memory: 1Gi
+  config:
+    maxServerMemoryRatio: 0.8
+    markCacheSize: 67108864
+    backgroundPoolSize: 2
+    # The defaults start ~780 threads per pod (512 in the schedule pool alone); each thread's
+    # allocator cache pushed resident memory to the 1 GiB pod's cap. Sized for two replicated tables.
+    threadPools:
+      background_schedule_pool_size: 32
+      background_fetches_pool_size: 4
+      background_common_pool_size: 2
+      background_move_pool_size: 1
+      background_distributed_schedule_pool_size: 4
+      background_buffer_flush_schedule_pool_size: 1
+      background_message_broker_schedule_pool_size: 1
+      max_thread_pool_free_size: 32
+    maxThreads: 2
+    systemLogs:
+      enabled: true
+      ttlDays: 1
+
+keeper:
+  replicas: 3
+  storage:
+    size: 512Mi
+    reclaimPolicy: Delete
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
+# No backup sidecars and no MinIO in dev; backups are a prod-profile feature (needs real S3).
+backup:
+  enabled: false
+
+observability:
+  prometheus:
+    enabled: true
+  alerts:
+    for:                          # short windows so the failure tests see alerts fire
+      fast: 20s
+      medium: 1m
+      slow: 3m
+    ingestStalled: false          # dev is often idle
+
+limits:
+  api:
+    maxMemoryUsage: 268435456     # 256 MiB per API query: fits under the dev server cap with the idle heap
+
+# The cluster Prometheus (monitoring/) scrapes ClickHouse and Keeper through these
+# Services, and the network policy admits it from the monitoring namespace.
+monitoring:
+  serviceAnnotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9363"
+    prometheus.io/path: /metrics
+  keeperServiceAnnotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "7000"
+    prometheus.io/path: /metrics
+
+networkPolicy:
+  monitoring:
+    from:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: monitoring

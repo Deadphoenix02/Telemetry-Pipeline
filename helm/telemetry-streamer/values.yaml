@@ -1,0 +1,75 @@
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: telemetry-streamer
+  tag: ""              # defaults to the chart appVersion
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+runAsUser: 65532       # matches the Dockerfile
+
+streamer:
+  replicas: 1          # 0..10 (enforced by values.schema.json; 0 stops streaming)
+  rateRowsPerSec: 1000 # per instance, 1..100000
+  tick: 10ms
+  target: ""           # one broker host:port, used when brokers.replicas is 0; empty = records are discarded
+  mode: auto           # auto | memory | stream
+  maxMemoryMB: 16
+  graceSeconds: 30     # shutdown flush/ack deadline; pod grace period = this + 10
+  logLevel: info
+  statsInterval: 5s
+  goMemLimit: 52MiB    # ~80% of the memory limit, keeps the GC under it
+  # Failover between brokers. The window must outlast the slowest failover
+  # (ackTimeout + connectTimeout) for streaming never to pause while a broker is up.
+  window: 3s           # unacked records held for resend, as time at rateRowsPerSec
+  windowMaxRecords: 60000 # about 15 MB; caps the window above 20,000 rows/s
+  connectTimeout: 1s   # one attempt to open a stream to a broker
+  ackTimeout: 2s       # fail over when the oldest sent record is unacked this long
+  homeProbe: 10s       # while on another broker, try the home broker (streamer_id mod brokers) this often
+
+# The brokers to stream to, addressed one by one through the broker chart's headless
+# Service: <statefulSet>-<i>.<headlessService>:<port> for i < replicas. replicas must
+# equal the broker chart's replicas. 0 = use streamer.target instead.
+brokers:
+  replicas: 0
+  statefulSet: broker
+  headlessService: broker-headless
+  port: 7070
+
+service:
+  port: 9100           # metrics + health only; the streamer exposes nothing else
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 32Mi
+  limits:
+    cpu: 200m
+    memory: 64Mi
+
+podAnnotations: {}
+
+networkPolicy:
+  enabled: true
+  dns:
+    namespaceLabels:
+      kubernetes.io/metadata.name: kube-system
+    podLabels:
+      k8s-app: kube-dns
+  prometheus:
+    # Peers allowed to scrape the metrics port (NetworkPolicyPeer list).
+    from:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: monitoring
+  ingest:
+    port: 7070         # the broker's gRPC port
+    # Peers the streamer may reach on the ingest port (NetworkPolicyPeer list).
+    # Empty = no egress to ingest. Set this together with streamer.target.
+    to: []
+
+serviceMonitor:
+  enabled: false       # needs the Prometheus Operator CRDs
+  interval: 15s
+  labels: {}           # e.g. release: kube-prometheus-stack

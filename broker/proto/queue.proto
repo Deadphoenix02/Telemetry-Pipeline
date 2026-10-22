@@ -1,0 +1,124 @@
+// Wire contract between the broker and its consumers (collectors).
+// Producers (streamers) use telemetry.v1.Ingest from telemetry-streamer/proto/ingest.proto,
+// which the broker also serves. Regenerate the Go code with `bash broker/proto/gen.sh`.
+syntax = "proto3";
+
+package queue.v1;
+
+option go_package = "broker/pkg/queuepb";
+
+// Broker serves the log. Offsets are WAL entry indexes: one entry is one frame
+// (pkg/frame) and the first entry of a partition is 1.
+service Broker {
+  // Fetch opens a push stream for one partition, starting at offset. Only
+  // fsynced entries (at or below the high watermark) are ever sent. When the
+  // consumer is caught up the broker waits up to max_wait_ms and then sends a
+  // response with no entries, which carries the current high watermark.
+  // An offset below first_offset or above high_watermark+1 fails with OUT_OF_RANGE.
+  rpc Fetch(FetchRequest) returns (stream FetchResponse);
+}
+
+message FetchRequest {
+  uint32 partition   = 1;
+  uint64 offset      = 2; // first entry to send
+  uint32 max_bytes   = 3; // per response; 0 = broker default
+  uint32 max_wait_ms = 4; // 0 = broker default
+}
+
+message Entry {
+  uint64 offset = 1;
+  bytes  frame  = 2;
+}
+
+message FetchResponse {
+  uint32 partition      = 1;
+  uint64 high_watermark = 2; // last fsynced offset, 0 = none yet
+  uint64 first_offset   = 3; // first offset still on disk
+  repeated Entry entries = 4;
+  // Non-zero when entries in [requested offset, skip_to) could not be read
+  // from disk (corruption). The stream continues at skip_to.
+  uint64 skip_to        = 5;
+}
+
+// Coordinator runs the single consumer group. Membership is in memory;
+// committed offsets are durable.
+service Coordinator {
+  // JoinGroup blocks until the group's next generation is formed.
+  rpc JoinGroup(JoinGroupRequest) returns (JoinGroupResponse);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  rpc LeaveGroup(LeaveGroupRequest) returns (LeaveGroupResponse);
+  // CommitOffset is the consumer ack: entries below each offset are consumed
+  // and may be deleted.
+  rpc CommitOffset(CommitOffsetRequest) returns (CommitOffsetResponse);
+  rpc FetchOffsets(FetchOffsetsRequest) returns (FetchOffsetsResponse);
+}
+
+enum ErrorCode {
+  OK                    = 0;
+  UNKNOWN_MEMBER        = 1; // rejoin with an empty member_id
+  ILLEGAL_GENERATION    = 2; // rejoin with the same member_id
+  REBALANCE_IN_PROGRESS = 3; // finish in-flight work, commit, then rejoin
+  NOT_ASSIGNED          = 4; // commit for a partition the member does not own
+  OFFSET_OUT_OF_RANGE   = 5; // commit beyond the high watermark
+  UNKNOWN_GROUP         = 6;
+}
+
+message JoinGroupRequest {
+  string group     = 1;
+  string member_id = 2; // empty on first join
+  string client_id = 3; // free text for logs, e.g. the pod name
+}
+
+message JoinGroupResponse {
+  ErrorCode error                = 1;
+  string member_id               = 2;
+  uint64 generation              = 3;
+  repeated uint32 partitions     = 4;
+  uint32 heartbeat_interval_ms   = 5;
+  uint32 session_timeout_ms      = 6;
+}
+
+message HeartbeatRequest {
+  string group      = 1;
+  string member_id  = 2;
+  uint64 generation = 3;
+}
+
+message HeartbeatResponse {
+  ErrorCode error = 1;
+}
+
+message LeaveGroupRequest {
+  string group     = 1;
+  string member_id = 2;
+}
+
+message LeaveGroupResponse {
+  ErrorCode error = 1;
+}
+
+message PartitionOffset {
+  uint32 partition = 1;
+  uint64 offset    = 2; // next offset to read
+}
+
+message CommitOffsetRequest {
+  string group                     = 1;
+  string member_id                 = 2;
+  uint64 generation                = 3;
+  repeated PartitionOffset offsets = 4;
+}
+
+message CommitOffsetResponse {
+  ErrorCode error = 1;
+}
+
+message FetchOffsetsRequest {
+  string group               = 1;
+  repeated uint32 partitions = 2; // empty = all
+}
+
+message FetchOffsetsResponse {
+  ErrorCode error                  = 1;
+  repeated PartitionOffset offsets = 2; // uncommitted partitions report their first offset
+}

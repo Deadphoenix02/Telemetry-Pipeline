@@ -1,0 +1,79 @@
+<!-- Dev tuning for a ~4 GB machine. Mounted into /etc/clickhouse-server/config.d/.
+     Check each setting name against the installed ClickHouse version. -->
+<clickhouse>
+    <max_server_memory_usage>1342177280</max_server_memory_usage> <!-- ~1.25 GB -->
+    <mark_cache_size>134217728</mark_cache_size>                  <!-- 128 MB -->
+    <uncompressed_cache_size>0</uncompressed_cache_size>
+    <background_pool_size>2</background_pool_size>
+    <background_schedule_pool_size>4</background_schedule_pool_size>
+    <max_concurrent_queries>20</max_concurrent_queries>
+
+    <!-- When background_pool_size is 2, total mutation pool capacity is 2 * 2 = 4 slots.
+         The default number_of_free_entries_in_pool_to_execute_mutation is 20 (20 > 4),
+         which causes ClickHouse to fail startup with Code 36 (BAD_ARGUMENTS).
+         Lowering this setting allows background mutations to run. -->
+    <merge_tree>
+        <number_of_free_entries_in_pool_to_lower_max_size_of_merge>2</number_of_free_entries_in_pool_to_lower_max_size_of_merge>
+        <number_of_free_entries_in_pool_to_execute_mutation>2</number_of_free_entries_in_pool_to_execute_mutation>
+        <number_of_free_entries_in_pool_to_execute_optimize_entire_partition>2</number_of_free_entries_in_pool_to_execute_optimize_entire_partition>
+    </merge_tree>
+
+    <!-- Built-in Prometheus endpoint. -->
+    <prometheus>
+        <endpoint>/metrics</endpoint>
+        <port>9363</port>
+        <metrics>true</metrics>
+        <events>true</events>
+        <asynchronous_metrics>true</asynchronous_metrics>
+    </prometheus>
+
+    <!-- System log tables stay on in dev, with a 1 day TTL to bound disk use. -->
+    <query_log>
+        <database>system</database>
+        <table>query_log</table>
+        <partition_by remove="1"/>
+        <order_by remove="1"/>
+        <ttl remove="1"/>
+        <engine>ENGINE = MergeTree PARTITION BY event_date ORDER BY (event_date, event_time) TTL event_date + INTERVAL 1 DAY SETTINGS ttl_only_drop_parts = 1</engine>
+    </query_log>
+    <part_log>
+        <database>system</database>
+        <table>part_log</table>
+        <partition_by remove="1"/>
+        <order_by remove="1"/>
+        <ttl remove="1"/>
+        <engine>ENGINE = MergeTree PARTITION BY event_date ORDER BY (event_date, event_time) TTL event_date + INTERVAL 1 DAY SETTINGS ttl_only_drop_parts = 1</engine>
+    </part_log>
+    <metric_log>
+        <database>system</database>
+        <table>metric_log</table>
+        <partition_by remove="1"/>
+        <order_by remove="1"/>
+        <ttl remove="1"/>
+        <engine>ENGINE = MergeTree PARTITION BY event_date ORDER BY (event_date, event_time) TTL event_date + INTERVAL 1 DAY SETTINGS ttl_only_drop_parts = 1</engine>
+    </metric_log>
+    <asynchronous_metric_log>
+        <database>system</database>
+        <table>asynchronous_metric_log</table>
+        <partition_by remove="1"/>
+        <order_by remove="1"/>
+        <ttl remove="1"/>
+        <engine>ENGINE = MergeTree PARTITION BY event_date ORDER BY (event_date, event_time) TTL event_date + INTERVAL 1 DAY SETTINGS ttl_only_drop_parts = 1</engine>
+    </asynchronous_metric_log>
+    <trace_log>
+        <database>system</database>
+        <table>trace_log</table>
+        <partition_by remove="1"/>
+        <order_by remove="1"/>
+        <ttl remove="1"/>
+        <engine>ENGINE = MergeTree PARTITION BY event_date ORDER BY (event_date, event_time) TTL event_date + INTERVAL 1 DAY SETTINGS ttl_only_drop_parts = 1</engine>
+    </trace_log>
+    <text_log>
+        <database>system</database>
+        <table>text_log</table>
+        <partition_by remove="1"/>
+        <order_by remove="1"/>
+        <ttl remove="1"/>
+        <engine>ENGINE = MergeTree PARTITION BY event_date ORDER BY (event_date, event_time) TTL event_date + INTERVAL 1 DAY SETTINGS ttl_only_drop_parts = 1</engine>
+    </text_log>
+</clickhouse>

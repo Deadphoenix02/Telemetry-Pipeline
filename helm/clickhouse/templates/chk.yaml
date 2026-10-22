@@ -1,0 +1,74 @@
+{{- if eq .Values.topology.mode "replicated" }}
+apiVersion: clickhouse-keeper.altinity.com/v1
+kind: ClickHouseKeeperInstallation
+metadata:
+  name: {{ include "ts.keeperName" . }}
+  labels:
+    {{- include "ts.labels" . | nindent 4 }}
+spec:
+  taskID: {{ .Release.Revision | quote }}
+  configuration:
+    settings:
+      # Prometheus endpoint, scraped by the chart's Prometheus or a ServiceMonitor.
+      prometheus/endpoint: /metrics
+      prometheus/port: {{ .Values.keeper.metricsPort | int | quote }}
+      prometheus/metrics: "true"
+      prometheus/events: "true"
+      prometheus/asynchronous_metrics: "true"
+    clusters:
+      - name: keeper
+        layout:
+          replicasCount: {{ .Values.keeper.replicas | int }}
+  defaults:
+    templates:
+      podTemplate: keeper
+      volumeClaimTemplate: keeper-data
+  templates:
+    podTemplates:
+      - name: keeper
+        metadata:
+          labels:
+            {{- include "ts.selector" (dict "root" . "component" "keeper") | nindent 12 }}
+        spec:
+          securityContext:
+            {{- include "ts.podSecurity" . | nindent 12 }}
+          {{- with .Values.keeper.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.keeper.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.keeper.affinity }}
+          affinity:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.keeper.topologySpreadConstraints }}
+          topologySpreadConstraints:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          containers:
+            - name: clickhouse-keeper
+              image: "{{ .Values.keeper.image.repository }}:{{ .Values.keeper.image.tag }}"
+              imagePullPolicy: {{ .Values.keeper.image.pullPolicy }}
+              securityContext:
+                {{- include "ts.containerSecurity" . | nindent 16 }}
+              ports:
+                - name: metrics
+                  containerPort: {{ .Values.keeper.metricsPort }}
+              resources:
+                {{- toYaml .Values.keeper.resources | nindent 16 }}
+    volumeClaimTemplates:
+      - name: keeper-data
+        reclaimPolicy: {{ .Values.keeper.storage.reclaimPolicy }}
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          {{- with .Values.keeper.storage.storageClassName }}
+          storageClassName: {{ . }}
+          {{- end }}
+          resources:
+            requests:
+              storage: {{ .Values.keeper.storage.size }}
+{{- end }}

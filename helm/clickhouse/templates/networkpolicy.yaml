@@ -1,0 +1,207 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $replicated := eq .Values.topology.mode "replicated" }}
+{{- $egress := .Values.networkPolicy.egress.enabled }}
+{{- $prom := .Values.observability.prometheus.enabled }}
+{{- $minio := and .Values.backup.enabled .Values.backup.minio.enabled }}
+# Selecting the pods makes them default-deny for ingress (and for egress when
+# networkPolicy.egress.enabled); the rules below are the only way in or out.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ts.fullname" . }}-clickhouse
+  labels:
+    {{- include "ts.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "ts.selector" (dict "root" . "component" "clickhouse") | nindent 6 }}
+  policyTypes:
+    - Ingress
+    {{- if $egress }}
+    - Egress
+    {{- end }}
+  ingress:
+    {{- with .Values.networkPolicy.clients }}
+    # Applications: collectors and the API.
+    - from:
+        {{- toYaml . | nindent 8 }}
+      ports:
+        {{- include "ts.clientPorts" $ | nindent 8 }}
+    {{- end }}
+    # Replicas and shards talking to each other (native, HTTP, interserver).
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "ts.selector" (dict "root" . "component" "clickhouse") | nindent 14 }}
+      ports:
+        {{- include "ts.clientPorts" . | nindent 8 }}
+        {{- include "ts.interserverPorts" . | nindent 8 }}
+    # The migration Job.
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "ts.selector" (dict "root" . "component" "migrations") | nindent 14 }}
+      ports:
+        {{- include "ts.nativePorts" . | nindent 8 }}
+    # The operator manages and probes every pod.
+    - from:
+        - podSelector:
+            {{- toYaml .Values.networkPolicy.operator.podSelector | nindent 12 }}
+          {{- with .Values.networkPolicy.operator.namespace }}
+          namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . }}
+          {{- end }}
+    {{- if or $prom .Values.networkPolicy.monitoring.from }}
+    # Prometheus: ClickHouse metrics, plus the backup sidecar's metrics when backups are on.
+    - from:
+        {{- if $prom }}
+        - podSelector:
+            matchLabels:
+              {{- include "ts.selector" (dict "root" . "component" "prometheus") | nindent 14 }}
+        {{- end }}
+        {{- with .Values.networkPolicy.monitoring.from }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      ports:
+        - port: 9363
+          protocol: TCP
+        {{- if .Values.backup.enabled }}
+        - port: 7171
+          protocol: TCP
+        {{- end }}
+    {{- end }}
+  {{- if $egress }}
+  egress:
+    {{- include "ts.dnsEgress" . | nindent 4 }}
+    # Other ClickHouse pods: Distributed queries, inserts and replication fetches.
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "ts.selector" (dict "root" . "component" "clickhouse") | nindent 14 }}
+      ports:
+        {{- include "ts.clientPorts" . | nindent 8 }}
+        {{- include "ts.interserverPorts" . | nindent 8 }}
+    {{- if $replicated }}
+    # Keeper.
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "ts.selector" (dict "root" . "component" "keeper") | nindent 14 }}
+      ports:
+        - port: 2181
+          protocol: TCP
+        - port: 2281
+          protocol: TCP
+    {{- end }}
+    {{- if $minio }}
+    # In-chart MinIO for backups.
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "ts.selector" (dict "root" . "component" "minio") | nindent 14 }}
+      ports:
+        - port: 9000
+          protocol: TCP
+    {{- else if .Values.backup.enabled }}
+    # External object storage for backups (HTTPS).
+    - ports:
+        - port: 443
+          protocol: TCP
+    {{- end }}
+    {{- with .Values.networkPolicy.egress.extra }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- end }}
+{{- if $egress }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ts.fullname" . }}-migrations
+  labels:
+    {{- include "ts.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "ts.selector" (dict "root" . "component" "migrations") | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []
+  egress:
+    {{- include "ts.dnsEgress" . | nindent 4 }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "ts.selector" (dict "root" . "component" "clickhouse") | nindent 14 }}
+      ports:
+        {{- include "ts.nativePorts" . | nindent 8 }}
+{{- end }}
+{{- if $replicated }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ts.fullname" . }}-keeper
+  labels:
+    {{- include "ts.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "ts.selector" (dict "root" . "component" "keeper") | nindent 6 }}
+  policyTypes:
+    - Ingress
+    {{- if $egress }}
+    - Egress
+    {{- end }}
+  ingress:
+    # ClickHouse pods use Keeper for replication and distributed DDL.
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "ts.selector" (dict "root" . "component" "clickhouse") | nindent 14 }}
+      ports:
+        - port: 2181
+          protocol: TCP
+        - port: 2281
+          protocol: TCP
+    # Keeper members form a Raft ensemble among themselves.
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "ts.selector" (dict "root" . "component" "keeper") | nindent 14 }}
+    # The operator.
+    - from:
+        - podSelector:
+            {{- toYaml .Values.networkPolicy.operator.podSelector | nindent 12 }}
+          {{- with .Values.networkPolicy.operator.namespace }}
+          namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . }}
+          {{- end }}
+    {{- if or $prom .Values.networkPolicy.monitoring.from }}
+    # Prometheus scraping Keeper metrics.
+    - from:
+        {{- if $prom }}
+        - podSelector:
+            matchLabels:
+              {{- include "ts.selector" (dict "root" . "component" "prometheus") | nindent 14 }}
+        {{- end }}
+        {{- with .Values.networkPolicy.monitoring.from }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      ports:
+        - port: {{ .Values.keeper.metricsPort }}
+          protocol: TCP
+    {{- end }}
+  {{- if $egress }}
+  egress:
+    {{- include "ts.dnsEgress" . | nindent 4 }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "ts.selector" (dict "root" . "component" "keeper") | nindent 14 }}
+  {{- end }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,24 @@
+{{- if .Values.migration.enabled }}
+{{- $dir := ternary "replicated" "single" (eq .Values.topology.mode "replicated") }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ts.fullname" . }}-migrations
+  labels:
+    {{- include "ts.labels" . | nindent 4 }}
+data:
+{{- range $path, $_ := .Files.Glob (printf "files/migrations/%s/*.sql" $dir) }}
+  {{ base $path }}: |-
+    {{- $.Files.Get $path | nindent 4 }}
+{{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ts.fullname" . }}-migrate-script
+  labels:
+    {{- include "ts.labels" . | nindent 4 }}
+data:
+  migrate.sh: |-
+    {{- .Files.Get "files/migrate.sh" | nindent 4 }}
+{{- end }}

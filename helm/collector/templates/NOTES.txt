@@ -1,0 +1,20 @@
+collector installed as "{{ include "collector.fullname" . }}" in namespace {{ .Release.Namespace }}.
+
+  brokers:    {{ include "collector.brokers" . }} (group {{ .Values.collector.group }} on each)
+  clickhouse: {{ .Values.clickhouse.addr }} as {{ .Values.clickhouse.user }} (password from secret {{ .Values.clickhouse.passwordSecret.name }})
+{{- if include "collector.keda" . }}
+  scaling:    KEDA, {{ .Values.keda.minReplicas }}..{{ .Values.keda.maxReplicas }} replicas at {{ .Values.keda.lagTarget }} records of lag each ({{ include "collector.lagURLs" . }})
+{{- else }}
+  scaling:    fixed, {{ .Values.replicas }} replica(s)
+{{- end }}
+
+CHECK:
+     kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "collector.fullname" . }}
+     kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "collector.fullname" . }} -f
+     kubectl -n {{ .Release.Namespace }} get scaledobject,hpa
+{{- if and .Values.keda.enabled (not (include "collector.keda" .)) }}
+
+NOTE: keda.enabled is true but the KEDA CRDs are not installed, so the collector
+runs with a fixed {{ .Values.replicas }} replica(s). Install KEDA (make deploy SERVICE=keda)
+and upgrade this release to enable lag-based scaling.
+{{- end }}

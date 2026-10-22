@@ -1,0 +1,239 @@
+# Defaults describe the single-node dev profile sized for a small budget:
+# about 2 GiB of disk and under 1.5 GiB of memory for ClickHouse.
+# values-prod.yaml switches to sharded and replicated.
+
+nameOverride: ""
+fullnameOverride: ""
+
+topology:
+  # single:     one ClickHouse pod, plain ReplacingMergeTree, no Keeper.
+  # replicated: shards x replicas pods, Replicated tables plus a Distributed table,
+  #             and a ClickHouse Keeper ensemble. Needs the keeper settings below.
+  mode: single
+  clusterName: telemetry
+  shards: 1
+  replicas: 1
+
+retention:
+  ttl: "4 HOUR"        # "<n> HOUR" or "<n> DAY"
+  partition: hour      # hour or day. Use day when the TTL is measured in days.
+
+clickhouse:
+  image:
+    repository: altinity/clickhouse-server
+    tag: "25.8.16.10002.altinitystable"   # pin; verify the tag exists before first deploy
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 250m
+      memory: 768Mi
+    limits:
+      memory: 1536Mi
+  storage:
+    size: 2Gi
+    storageClassName: ""       # empty uses the cluster default
+    reclaimPolicy: Retain      # keep the volume if the installation is deleted
+  terminationGracePeriodSeconds: 60
+  # Graceful restarts. preStop waits so the pod leaves the Service before ClickHouse stops
+  # listening; then ClickHouse lets running queries finish for up to shutdownWaitSeconds.
+  # Both together must fit in terminationGracePeriodSeconds.
+  preStopSleepSeconds: 10
+  shutdownWaitSeconds: 30
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints: []
+  config:
+    maxServerMemoryRatio: 0.8  # fraction of the container memory limit ClickHouse may use
+    markCacheSize: 134217728   # bytes
+    backgroundPoolSize: 2
+    # Extra thread pool sizes, as server setting name: size. Empty keeps ClickHouse's defaults,
+    # which are sized for a large server (for example 512 schedule-pool threads).
+    threadPools: {}
+    maxThreads: 2              # default profile; set to 0 to leave ClickHouse's default
+    systemLogs:
+      enabled: true            # kept on in dev too; the short TTL below bounds their disk use
+      ttlDays: 1               # prod raises this
+
+keeper:                          # used only when topology.mode is replicated
+  replicas: 3                    # must be odd and at least 3
+  metricsPort: 7000              # Keeper's Prometheus endpoint
+  image:
+    repository: altinity/clickhouse-keeper
+    tag: "25.8.16.10002.altinitystable"
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+  storage:
+    size: 2Gi
+    storageClassName: ""         # use fast disks in production
+    reclaimPolicy: Retain
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints: []
+
+# Caps applied to the read-only API user so a heavy query cannot starve ingestion.
+limits:
+  api:
+    maxExecutionTime: 10         # seconds
+    maxMemoryUsage: 500000000    # bytes
+    maxResultRows: 100000
+    maxRowsToRead: 100000000     # rows scanned per query; stops runaway scans (result rows alone does not)
+    maxConcurrentQueries: 8      # per API user, across all its connections
+    # The caps above are locked: the api user cannot raise them with SET or SETTINGS.
+    quota:                       # per minute, for the api user
+      queriesPerMinute: 1200
+      errorsPerMinute: 200
+      readRowsPerMinute: 2000000000
+
+security:
+  tls:
+    # Phase 1: adds TLS ports (native 9440, HTTPS 8443, interserver 9010) next to the plaintext
+    # ones, with a Helm-generated CA. Plaintext stays on until the operator is configured for TLS.
+    enabled: false
+    requireClientCert: false     # true = mTLS: clients must present a certificate from the CA
+    caValidityDays: 3650
+    certValidityDays: 365
+  # Source networks that collector, api and migrator may connect from (localhost is always
+  # allowed). Use the pod CIDR of the cluster; dev is minikube's default.
+  allowedNetworks:
+    - 10.244.0.0/16
+
+auth:
+  # Leave empty and the chart creates a Secret with random passwords and keeps
+  # them across upgrades. To bring your own Secret (External Secrets, Sealed
+  # Secrets, Vault), set its name here. It must contain these keys:
+  #   migrator-password, migrator-password-sha256,
+  #   collector-password, collector-password-sha256,
+  #   api-password, api-password-sha256,
+  #   backup-password, backup-password-sha256,
+  #   s3-access-key, s3-secret-key
+  # where each -sha256 value is the lowercase hex SHA-256 of the password.
+  existingSecret: ""
+
+# Backups use a clickhouse-backup sidecar in every ClickHouse pod; the Altinity operator
+# manages the pods but has no backup feature of its own. The sidecar on the first replica of
+# each shard (the pod whose name ends in -0-0) runs scheduled create+upload; the others only
+# serve restores. Every pod writes under its own prefix in the bucket.
+backup:
+  enabled: false                 # off by default; only values-prod.yaml turns it on
+  image:
+    repository: altinity/clickhouse-backup
+    tag: "2.6.3"                 # pin; verify the tag exists before first deploy
+    pullPolicy: IfNotPresent
+  interval: 1h                   # incremental backup every interval
+  fullInterval: 24h              # full backup this often
+  keepLocal: 1
+  keepRemote: 3
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+  s3:
+    endpoint: ""                 # empty uses the in-chart MinIO when minio.enabled, else AWS S3
+    bucket: telemetry-backups
+    region: us-east-1
+    path: backup
+  minio:                         # dev and minikube stand-in for object storage; use real S3 in prod
+    enabled: true
+    image:
+      repository: quay.io/minio/minio
+      tag: RELEASE.2024-10-13T13-34-11Z
+      mcRepository: quay.io/minio/mc
+      mcTag: RELEASE.2024-10-08T09-37-26Z
+    storage:
+      size: 1Gi
+      storageClassName: ""
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 384Mi
+
+migration:
+  enabled: true
+  image: {}                      # empty reuses the clickhouse image (it contains clickhouse-client)
+  waitTimeoutSeconds: 600
+  backoffLimit: 6
+  activeDeadlineSeconds: 1200
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+networkPolicy:
+  enabled: true
+  egress:
+    # Restrict outbound traffic too: DNS, peers, Keeper and backup storage only.
+    enabled: true
+    extra: []                    # more egress rules (standard NetworkPolicy egress entries)
+  # Who may connect to ClickHouse on 9000 (native) and 8123 (HTTP). Each entry
+  # is a standard NetworkPolicy peer. The default allows pods in this namespace
+  # that carry the label telemetry-store/client: "true". To allow another
+  # namespace, add { namespaceSelector: {...}, podSelector: {...} }.
+  clients:
+    - podSelector:
+        matchLabels:
+          telemetry-store/client: "true"
+  # The operator must reach every ClickHouse and Keeper pod. Verify these labels
+  # with: kubectl get pods -n <ns> --show-labels
+  operator:
+    namespace: ""                # empty means the release namespace
+    podSelector:
+      matchLabels:
+        app.kubernetes.io/name: altinity-clickhouse-operator
+  # Prometheus scraping of port 9363. Add peers here, for example
+  # - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+  monitoring:
+    from: []
+
+
+observability:
+  prometheus:
+    # A single in-namespace Prometheus that scrapes ClickHouse, Keeper and the operator and
+    # evaluates the chart's alert rules. For dev; prod uses the ServiceMonitor and PrometheusRule.
+    enabled: false
+    image:
+      repository: prom/prometheus
+      tag: v2.55.1
+      pullPolicy: IfNotPresent
+    retention: 2h                # kept in an emptyDir, so nothing survives a pod restart
+    scrapeInterval: 15s
+    operatorTarget: clickhouse-operator-altinity-clickhouse-operator-metrics:8888
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 256Mi
+  alerts:
+    enabled: true
+    # How long a condition must hold before firing: fast (outages), medium, slow (trends).
+    for:
+      fast: 1m
+      medium: 5m
+      slow: 15m
+    ingestStalled: true          # alert when no rows are inserted for the slow window
+    backupMaxAgeSeconds: 7200    # when backups are on
+  dashboard:
+    enabled: true                # ConfigMap for the Grafana sidecar (grafana_dashboard: "1")
+
+monitoring:
+  # Annotations on the -metrics (ClickHouse :9363) and -keeper-metrics Services, e.g. the
+  # prometheus.io/* set for an annotation-based cluster Prometheus.
+  serviceAnnotations: {}
+  keeperServiceAnnotations: {}
+  serviceMonitor:
+    enabled: false               # needs the Prometheus Operator CRDs
+    interval: 30s
+    labels: {}

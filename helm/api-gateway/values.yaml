@@ -1,0 +1,100 @@
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: api-gateway
+  tag: ""              # defaults to the chart appVersion
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+runAsUser: 65532       # matches the Dockerfile
+
+# One pod is enough for light traffic: rollouts still start the new pod before
+# stopping the old one (maxSurge 1, maxUnavailable 0), and a crashed pod is back
+# in seconds. Raise it for availability; the PodDisruptionBudget appears above 1.
+# Keep (replicas + 1 during a rollout) x gateway.maxInFlight within the api
+# user's limits.api.maxConcurrentQueries in the telemetry-store chart (8); past
+# it ClickHouse rejects the query, and the gateway answers 429 anyway.
+replicas: 1
+
+gateway:
+  maxInFlight: 4       # concurrent ClickHouse queries per pod...
+  queueWait: 1s        # ...a request waits this long for one, then gets 429
+  queryTimeout: 15s    # ClickHouse stops the api user's queries at 10 s itself
+  chunkRows: 10000     # rows per ClickHouse query; results of any size are read in chunks
+                       # (at most the api user's maxResultRows, 100000). No limit by default.
+  gpuCacheTTL: 5s      # GET /gpus responses are cached this long; 0s disables
+  drainDelaySeconds: 5 # SIGTERM: unready but serving while the endpoints update...
+  shutdownGraceSeconds: 20 # ...then finish in-flight requests; pod grace period = both + 5
+  logLevel: info
+  goMemLimit: 100MiB   # ~80% of the memory limit
+
+clickhouse:
+  addr: clickhouse-telemetry-store:9000   # native protocol Service of the telemetry-store release
+  database: default
+  user: api                               # read-only, capped user created by the telemetry-store chart
+  table: telemetry
+  gpusTable: gpus
+  passwordSecret:
+    name: telemetry-store-credentials
+    key: api-password
+
+service:
+  type: ClusterIP
+  port: 8080           # the API
+  adminPort: 9090      # /healthz /readyz /metrics; not exposed through the Ingress or the NodePort
+
+# A second Service that exposes only the API port on every node, for a local cluster such as
+# minikube: http://<node IP>:<port>, with nothing to keep running.
+nodePort:
+  enabled: false
+  port: 30080          # 30000-32767
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: ""             # empty matches every host
+  tls: []              # standard Ingress tls entries
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 48Mi
+  limits:
+    cpu: 500m
+    memory: 128Mi
+
+podAnnotations: {}
+# The telemetry-store NetworkPolicy admits pods with this label on 9000/8123.
+podLabels:
+  telemetry-store/client: "true"
+
+networkPolicy:
+  enabled: true
+  dns:
+    namespaceLabels:
+      kubernetes.io/metadata.name: kube-system
+    podLabels:
+      k8s-app: kube-dns
+  # Who may call the API on service.port, as standard NetworkPolicy peers. Empty admits
+  # every source: this is the read path for users. Narrow it to the ingress controller in prod.
+  api:
+    from: []
+  prometheus:
+    from:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: monitoring
+  clickhouse:
+    port: 9000
+    to:
+      - podSelector:
+          matchLabels:
+            app.kubernetes.io/name: telemetry-store
+            app.kubernetes.io/component: clickhouse
+
+serviceMonitor:
+  enabled: false
+  interval: 15s
+  labels: {}

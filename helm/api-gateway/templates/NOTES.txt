@@ -1,0 +1,24 @@
+api-gateway installed as "{{ include "api-gateway.fullname" . }}" in namespace {{ .Release.Namespace }}.
+
+  clickhouse: {{ .Values.clickhouse.addr }} as {{ .Values.clickhouse.user }} (password from secret {{ .Values.clickhouse.passwordSecret.name }})
+  replicas:   {{ .Values.replicas }} x {{ .Values.gateway.maxInFlight }} concurrent queries
+{{- if .Values.ingress.enabled }}
+  ingress:    {{ .Values.ingress.host | default "*" }}/api/
+{{- end }}
+
+TRY IT:
+{{- if .Values.nodePort.enabled }}
+     The API is on every node at port {{ .Values.nodePort.port }}; on minikube:
+     curl -s http://$(minikube ip):{{ .Values.nodePort.port }}/api/v1/gpus
+     curl -s "http://$(minikube ip):{{ .Values.nodePort.port }}/api/v1/gpus/<GPU-id>/telemetry?start_time=2025-07-18T20:00:00Z&end_time=2025-07-18T21:00:00Z"
+     open http://$(minikube ip):{{ .Values.nodePort.port }}/api/v1/docs     (Swagger UI; document at /api/v1/swagger.json)
+{{- else }}
+     kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "api-gateway.fullname" . }} {{ .Values.service.port }}
+     curl -s localhost:{{ .Values.service.port }}/api/v1/gpus
+     curl -s "localhost:{{ .Values.service.port }}/api/v1/gpus/<GPU-id>/telemetry?start_time=2025-07-18T20:00:00Z&end_time=2025-07-18T21:00:00Z"
+     open http://localhost:{{ .Values.service.port }}/api/v1/docs     (Swagger UI; document at /api/v1/swagger.json)
+{{- end }}
+
+CHECK:
+     kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "api-gateway.fullname" . }}
+     kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "api-gateway.fullname" . }} -f

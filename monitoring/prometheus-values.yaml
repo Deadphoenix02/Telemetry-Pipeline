@@ -1,0 +1,74 @@
+# Cluster Prometheus for the dev cluster: what OpenLens reads for its CPU and
+# memory charts (kubelet/cAdvisor, kube-state-metrics, node-exporter), plus the
+# broker, collector, streamer and api-gateway pods through prometheus.io/* annotations,
+# and ClickHouse and Keeper through their annotated metrics Services.
+# Trimmed for the demo machine. ClickHouse also keeps its own small in-namespace
+# Prometheus, for its alert rules.
+alertmanager:
+  enabled: false
+prometheus-pushgateway:
+  enabled: false
+
+server:
+  global:
+    scrape_interval: 30s
+    evaluation_interval: 30s
+  retention: 24h
+  retentionSize: 3GB          # below the volume, so Prometheus trims before the disk fills
+  persistentVolume:
+    size: 4Gi
+  resources:
+    requests:
+      cpu: 50m
+      memory: 192Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+configmapReload:
+  prometheus:
+    resources:
+      requests:
+        cpu: 5m
+        memory: 16Mi
+      limits:
+        memory: 32Mi
+
+kube-state-metrics:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 64Mi
+
+prometheus-node-exporter:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 16Mi
+    limits:
+      memory: 64Mi
+
+# minikube's Docker runtime (cri-dockerd): the kubelet's cAdvisor only reports
+# pod-level cgroups, without the container and image labels. OpenLens's pod and
+# node charts filter on container!="", so they stay empty. These rules copy each
+# pod-level series with container="pod" added (no per-container series exist, so
+# nothing is counted twice). Remove them on a containerd cluster, where
+# per-container series exist and the copies would double the totals.
+serverFiles:
+  recording_rules.yml:
+    groups:
+      - name: lens-cri-dockerd
+        interval: 30s
+        rules:
+          - record: container_cpu_usage_seconds_total
+            expr: label_replace(container_cpu_usage_seconds_total{container="", pod!=""}, "container", "pod", "", "")
+          - record: container_memory_working_set_bytes
+            expr: label_replace(container_memory_working_set_bytes{container="", pod!=""}, "container", "pod", "", "")
+          - record: container_fs_usage_bytes
+            expr: label_replace(container_fs_usage_bytes{container="", pod!=""}, "container", "pod", "", "")
+          - record: container_fs_reads_bytes_total
+            expr: label_replace(container_fs_reads_bytes_total{container="", pod!=""}, "container", "pod", "", "")
+          - record: container_fs_writes_bytes_total
+            expr: label_replace(container_fs_writes_bytes_total{container="", pod!=""}, "container", "pod", "", "")

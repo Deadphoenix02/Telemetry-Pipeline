@@ -1,0 +1,46 @@
+{{- if include "collector.keda" . }}
+# KEDA reads the broker's GET /lag (records the group has not committed) and
+# sizes the Deployment so each replica has about lagTarget records of backlog.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "collector.role" (dict "ctx" . "role" "scaler") }}
+  labels:
+    {{- include "collector.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    name: {{ include "collector.fullname" . }}
+  minReplicaCount: {{ int .Values.keda.minReplicas }}
+  maxReplicaCount: {{ int .Values.keda.maxReplicas }}
+  pollingInterval: {{ int .Values.keda.pollingInterval }}
+  cooldownPeriod: {{ int .Values.keda.cooldownPeriod }}
+  fallback:
+    failureThreshold: 3
+    replicas: {{ int .Values.keda.fallbackReplicas }}
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleUp:
+          stabilizationWindowSeconds: 0
+          policies:
+            - type: Pods
+              value: {{ int .Values.keda.scaleUp.pods }}
+              periodSeconds: {{ int .Values.keda.scaleUp.periodSeconds }}
+        scaleDown:
+          stabilizationWindowSeconds: {{ int .Values.keda.scaleDown.stabilizationSeconds }}
+          policies:
+            - type: Pods
+              value: {{ int .Values.keda.scaleDown.pods }}
+              periodSeconds: {{ int .Values.keda.scaleDown.periodSeconds }}
+  triggers:
+    {{- $urls := splitList "," (include "collector.lagURLs" .) }}
+    {{- $target := max 1 (div (int .Values.keda.lagTarget) (len $urls)) }}
+    {{- range $urls }}
+    - type: metrics-api
+      metricType: AverageValue
+      metadata:
+        url: {{ . | quote }}
+        valueLocation: lag
+        targetValue: {{ $target | quote }}
+    {{- end }}
+{{- end }}

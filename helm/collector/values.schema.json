@@ -1,0 +1,40 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "replicas": { "type": "integer", "minimum": 0, "maximum": 10 },
+    "collector": {
+      "type": "object",
+      "properties": {
+        "broker": { "type": "string", "minLength": 1 },
+        "group": { "type": "string", "minLength": 1 },
+        "batchRows": { "type": "integer", "minimum": 1 },
+        "batchWait": { "type": "string", "pattern": "^[0-9]+(ms|s)$" },
+        "bufferMB": { "type": "integer", "minimum": 1 },
+        "insertTimeout": { "type": "string", "pattern": "^[0-9]+(ms|s)$" },
+        "poisonPolicy": { "type": "string", "enum": ["skip", "stop"] },
+        "shutdownGraceSeconds": { "type": "integer", "minimum": 5 },
+        "logLevel": { "type": "string", "enum": ["debug", "info", "warn", "error"] }
+      }
+    },
+    "brokers": {
+      "type": "object",
+      "properties": {
+        "replicas": { "type": "integer", "minimum": 0, "maximum": 5 },
+        "statefulSet": { "type": "string", "minLength": 1 },
+        "headlessService": { "type": "string", "minLength": 1 },
+        "grpcPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "httpPort": { "type": "integer", "minimum": 1, "maximum": 65535 }
+      }
+    },
+    "keda": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "minReplicas": { "type": "integer", "minimum": 0, "maximum": 10 },
+        "maxReplicas": { "type": "integer", "minimum": 1, "maximum": 10 },
+        "lagTarget": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

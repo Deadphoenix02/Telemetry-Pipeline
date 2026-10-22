@@ -1,0 +1,149 @@
+# promtool unit tests for the chart's alert rules, rendered with values-dev.yaml
+# (windows: fast 20s, medium 1m, slow 3m). Run with: make alerts-test
+rule_files:
+  - alerts.yaml
+
+evaluation_interval: 10s
+
+tests:
+  # A ClickHouse pod stops answering: fires after the fast window, not before.
+  - interval: 10s
+    input_series:
+      - series: 'up{job="clickhouse", instance="chi-a-0-0:9363"}'
+        values: '1 1 0 0 0 0 0'
+      - series: 'up{job="clickhouse", instance="chi-a-0-1:9363"}'
+        values: '1 1 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 30s
+        alertname: ClickHouseDown
+        exp_alerts: []
+      - eval_time: 50s
+        alertname: ClickHouseDown
+        exp_alerts:
+          - exp_labels: {severity: critical, job: clickhouse, instance: "chi-a-0-0:9363"}
+            exp_annotations:
+              summary: "ClickHouse chi-a-0-0:9363 is not answering on its metrics port"
+
+  # One of three Keepers down: KeeperDown only. Two down: quorum lost too.
+  - interval: 10s
+    input_series:
+      - series: 'up{job="keeper", instance="k0"}'
+        values: '0 0 0 0 0 0'
+      - series: 'up{job="keeper", instance="k1"}'
+        values: '1 1 1 0 0 0 0 0 0'
+      - series: 'up{job="keeper", instance="k2"}'
+        values: '1 1 1 1 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 30s
+        alertname: KeeperQuorumLost
+        exp_alerts: []
+      - eval_time: 30s
+        alertname: KeeperDown
+        exp_alerts:
+          - exp_labels: {severity: warning, job: keeper, instance: k0}
+            exp_annotations:
+              summary: "Keeper k0 is down; the ensemble still has quorum while a majority is up"
+      - eval_time: 70s
+        alertname: KeeperQuorumLost
+        exp_alerts:
+          - exp_labels: {severity: critical}
+            exp_annotations:
+              summary: "Fewer than 2 Keepers are up: replicated tables are read-only and inserts fail"
+
+  # A replica turns read-only (Keeper unreachable from that pod).
+  - interval: 10s
+    input_series:
+      - series: 'ClickHouseMetrics_ReadonlyReplica{job="clickhouse", instance="i1"}'
+        values: '0 2 2 2 2 2'
+    alert_rule_test:
+      - eval_time: 40s
+        alertname: ClickHouseReplicaReadOnly
+        exp_alerts:
+          - exp_labels: {severity: critical, job: clickhouse, instance: i1}
+            exp_annotations:
+              summary: "i1 has 2 read-only replicated tables"
+
+  # Part count: warning above 300 after the medium window, critical above 1000 quickly.
+  - interval: 10s
+    input_series:
+      - series: 'ClickHouseAsyncMetrics_MaxPartCountForPartition{job="clickhouse", instance="i1"}'
+        values: '100 400x10 1200x5'
+    alert_rule_test:
+      - eval_time: 40s
+        alertname: ClickHouseTooManyParts
+        exp_alerts: []
+      - eval_time: 100s
+        alertname: ClickHouseTooManyParts
+        exp_alerts:
+          - exp_labels: {severity: warning, job: clickhouse, instance: i1}
+            exp_annotations:
+              summary: "i1 has a partition with 400 parts; inserts are too small or merges are behind"
+      - eval_time: 100s
+        alertname: ClickHouseTooManyPartsCritical
+        exp_alerts: []
+      - eval_time: 150s
+        alertname: ClickHouseTooManyPartsCritical
+        exp_alerts:
+          - exp_labels: {severity: critical, job: clickhouse, instance: i1}
+            exp_annotations:
+              summary: "i1 has a partition with 1200 parts; inserts are about to be delayed or rejected"
+
+  # Disk: 10% free is a warning, 3% is critical.
+  - interval: 10s
+    input_series:
+      - series: 'ClickHouseAsyncMetrics_DiskAvailable_default{job="clickhouse", instance="i1"}'
+        values: '10x10 3x10'
+      - series: 'ClickHouseAsyncMetrics_DiskTotal_default{job="clickhouse", instance="i1"}'
+        values: '100x20'
+    alert_rule_test:
+      - eval_time: 90s
+        alertname: ClickHouseDiskAlmostFull
+        exp_alerts:
+          - exp_labels: {severity: warning, job: clickhouse, instance: i1}
+            exp_annotations:
+              summary: "i1 has less than 15% disk left; check the TTL is dropping parts"
+      - eval_time: 90s
+        alertname: ClickHouseDiskCritical
+        exp_alerts: []
+      - eval_time: 150s
+        alertname: ClickHouseDiskCritical
+        exp_alerts:
+          - exp_labels: {severity: critical, job: clickhouse, instance: i1}
+            exp_annotations:
+              summary: "i1 has less than 5% disk left; inserts will fail soon"
+
+  # Memory: no alert without a cgroup limit (total 0); alert above 90% of the 0.8 server cap (72%).
+  - interval: 10s
+    input_series:
+      - series: 'ClickHouseAsyncMetrics_jemalloc_resident{job="clickhouse", instance="nolimit"}'
+        values: '500x10'
+      - series: 'ClickHouseAsyncMetrics_CGroupMemoryTotal{job="clickhouse", instance="nolimit"}'
+        values: '0x10'
+      - series: 'ClickHouseAsyncMetrics_jemalloc_resident{job="clickhouse", instance="ok"}'
+        values: '70x10'
+      - series: 'ClickHouseAsyncMetrics_CGroupMemoryTotal{job="clickhouse", instance="ok"}'
+        values: '100x10'
+      - series: 'ClickHouseAsyncMetrics_jemalloc_resident{job="clickhouse", instance="tight"}'
+        values: '75x10'
+      - series: 'ClickHouseAsyncMetrics_CGroupMemoryTotal{job="clickhouse", instance="tight"}'
+        values: '100x10'
+    alert_rule_test:
+      - eval_time: 90s
+        alertname: ClickHouseMemoryNearLimit
+        exp_alerts:
+          - exp_labels: {severity: warning, job: clickhouse, instance: tight}
+            exp_annotations:
+              summary: "tight is near its server memory cap; queries will be refused with MEMORY_LIMIT_EXCEEDED"
+
+  # Rejected inserts fire immediately.
+  - interval: 10s
+    input_series:
+      - series: 'ClickHouseProfileEvents_RejectedInserts{job="clickhouse", instance="i1"}'
+        values: '0 0 0 5 5 5'
+    alert_rule_test:
+      - eval_time: 50s
+        alertname: ClickHouseInsertsRejected
+        exp_alerts:
+          - exp_labels: {severity: critical, job: clickhouse, instance: i1}
+            exp_annotations:
+              summary: "i1 rejected inserts (too many parts)"

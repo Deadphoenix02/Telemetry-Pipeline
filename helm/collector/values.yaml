@@ -1,0 +1,117 @@
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: collector
+  tag: ""              # defaults to the chart appVersion
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+runAsUser: 65532       # matches the Dockerfile
+
+# Replicas when KEDA is disabled (or its CRDs are not installed). At most the
+# broker's partition count: extra collectors would own no partitions.
+replicas: 1
+
+collector:
+  broker: broker:7070  # a single broker, used when brokers.replicas is 0
+  group: collectors
+  batchRows: 5000      # insert at this many rows...
+  batchWait: 1s        # ...or this long after the first row
+  bufferMB: 8          # ...or at this much buffered memory (fetching pauses meanwhile)
+  insertTimeout: 10s
+  poisonPolicy: skip   # skip | stop
+  registryRefresh: 60s
+  shutdownGraceSeconds: 25 # flush + insert + commit + leave; pod grace period = this + 5
+  logLevel: info
+  goMemLimit: 52MiB    # ~80% of the memory limit
+
+clickhouse:
+  addr: clickhouse-telemetry-store:9000   # native protocol Service of the telemetry-store release
+  database: default
+  user: collector                         # insert-only user created by the telemetry-store chart
+  table: telemetry
+  gpusTable: gpus
+  passwordSecret:
+    name: telemetry-store-credentials
+    key: collector-password
+
+service:
+  port: 9090           # metrics + health only
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 32Mi
+  limits:
+    cpu: 200m
+    memory: 64Mi
+
+podAnnotations: {}
+# The telemetry-store NetworkPolicy admits pods with this label on 9000/8123.
+podLabels:
+  telemetry-store/client: "true"
+
+# The brokers to consume from, each one directly through the broker chart's headless
+# Service: <statefulSet>-<i>.<headlessService>. Every broker is an independent queue
+# with its own consumer group, so each collector joins all of them. replicas must
+# equal the broker chart's replicas. 0 = use collector.broker instead.
+brokers:
+  replicas: 0
+  statefulSet: broker
+  headlessService: broker-headless
+  grpcPort: 7070
+  httpPort: 8080       # /lag, read by KEDA
+
+keda:
+  enabled: true        # needs the KEDA operator (make deploy SERVICE=keda)
+  minReplicas: 1       # production: 2, so one failure does not stop consumption
+  maxReplicas: 10      # equal to the partition count
+  lagTarget: 10000     # records of lag per replica, over all brokers
+  # With several brokers there is one trigger per broker, and the HPA follows the
+  # largest; each trigger's target is lagTarget / brokers, which matches the total
+  # when the lag is spread evenly and scales up harder when it is not.
+  # The KEDA operator runs in its own namespace, so the URL must be fully
+  # qualified. Single broker only; empty = http://broker.<release namespace>.svc.cluster.local:8080/lag
+  lagURL: ""
+  pollingInterval: 15
+  cooldownPeriod: 300
+  fallbackReplicas: 2  # held after 3 failed reads of the lag endpoint
+  scaleUp:
+    pods: 2
+    periodSeconds: 60
+  scaleDown:
+    stabilizationSeconds: 300  # fewer rebalances: each one pauses consumption briefly
+    pods: 1
+    periodSeconds: 120
+
+networkPolicy:
+  enabled: true
+  dns:
+    namespaceLabels:
+      kubernetes.io/metadata.name: kube-system
+    podLabels:
+      k8s-app: kube-dns
+  prometheus:
+    from:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: monitoring
+  broker:
+    port: 7070
+    to:
+      - podSelector:
+          matchLabels:
+            app.kubernetes.io/name: broker
+  clickhouse:
+    port: 9000
+    to:
+      - podSelector:
+          matchLabels:
+            app.kubernetes.io/name: telemetry-store
+            app.kubernetes.io/component: clickhouse
+
+serviceMonitor:
+  enabled: false
+  interval: 15s
+  labels: {}

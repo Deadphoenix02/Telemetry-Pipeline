@@ -1,0 +1,19 @@
+{{- if .Values.nodePort.enabled }}
+# Only the API port: the admin port (/healthz /readyz /metrics) stays cluster-internal.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "api-gateway.role" (dict "ctx" . "role" "nodeport") }}
+  labels:
+    {{- include "api-gateway.labels" . | nindent 4 }}
+spec:
+  type: NodePort
+  selector:
+    {{- include "api-gateway.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+      nodePort: {{ int .Values.nodePort.port }}
+      protocol: TCP
+{{- end }}

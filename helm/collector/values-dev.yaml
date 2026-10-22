@@ -1,0 +1,25 @@
+# Dev environment (the only environment file). Inherits the resource budget
+# from values.yaml.
+image:
+  repository: collector
+  tag: dev
+  pullPolicy: IfNotPresent   # image is loaded into the local cluster
+
+collector:
+  logLevel: info
+
+brokers:
+  replicas: 3                # must match the broker chart's replicas (values-dev.yaml there)
+
+keda:
+  enabled: true              # falls back to `replicas` if the KEDA CRDs are missing
+  minReplicas: 1
+  maxReplicas: 10
+
+networkPolicy:
+  enabled: true
+
+podAnnotations:             # scraped by the cluster Prometheus (monitoring/)
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "9090"
+  prometheus.io/path: /metrics
